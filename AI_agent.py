@@ -147,7 +147,7 @@ def display_line_style(text: str):
 st.title("ぼくのともだち ")
 
 # --- 質問入力エリア ---
-question = st.text_area("質問を入力してください", placeholder="例: 官民共創施設の名前を考えてください。", height=150)
+question = st.text_area("質問を入力してください", placeholder="例: 〇〇〇について考えてください。", height=150)
 
 # セッション状態の初期化
 if "discussion" not in st.session_state:
