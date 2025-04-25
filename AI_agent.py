@@ -3,6 +3,11 @@ import requests
 import re
 
 # ========================
+#    Streamlit ページ設定（最初に呼び出す）
+# ========================
+st.set_page_config(page_title="💬 ぼくのともだち", layout="wide")
+
+# ========================
 #    定数／設定
 # ========================
 API_KEY = st.secrets["general"]["api_key"]
@@ -52,8 +57,7 @@ def clean_response(text: str) -> str:
     """JSONアーティファクトを除去してテキストを整形。"""
     if not text:
         return ""
-    text = re.sub(r"\{'text':\s*'(.*?)'\}", r"\1", text)
-    return text.strip()
+    return re.sub(r"\{'text':\s*'(.*?)'\}", r"\1", text).strip()
 
 
 def call_gemini_api(prompt: str) -> str:
@@ -66,14 +70,10 @@ def call_gemini_api(prompt: str) -> str:
         return f"エラー: ステータス {res.status_code} - {res.text}"
     data = res.json()
     parts = []
-    try:
-        candidates = data.get("candidates", [])
-        for c in candidates:
-            content = c.get("content", {})
-            for p in content.get("parts", []):
-                parts.append(p.get("text", ""))
-    except Exception:
-        return "エラー: レスポンス解析失敗"
+    for c in data.get("candidates", []):
+        content = c.get("content", {})
+        for p in content.get("parts", []):
+            parts.append(p.get("text", ""))
     return clean_response("".join(parts))
 
 
@@ -103,7 +103,7 @@ def generate_summary(discussion: str) -> str:
 
 
 def display_line_style(discussion: str):
-    """LINE風のバブルチャットをHTMLでレンダリング。# chat-container で自動スクロール設定"""
+    """LINE風のバブルチャットをHTMLでレンダリング。自動スクロール付き"""
     st.markdown(
         """
         <style>
@@ -146,31 +146,23 @@ def display_line_style(discussion: str):
         )
 
 # ========================
-#    Streamlit アプリ本体
+#    質問入力と操作
 # ========================
-
-st.set_page_config(page_title="ぼくのともだち", layout="wide")
-
-st.title("💬 ぼくのともだち")
-
-# セッションステート初期化
-if "discussion" not in st.session_state:
-    st.session_state.discussion = ""
-if "summary" not in st.session_state:
-    st.session_state.summary = ""
-
-# --- 質問入力と操作 ---
 # input-area を固定表示
 st.markdown("<div id='input-area'>", unsafe_allow_html=True)
 with st.form("input_form"):
-    question = st.text_area("", placeholder="質問を入力してください…", key="input_text", height=50)
+    question = st.text_area(
+        "質問", placeholder="質問を入力してください…", key="input_text", height=50,
+        label_visibility="collapsed"
+    )
     submitted = st.form_submit_button("送信")
 st.markdown("</div>", unsafe_allow_html=True)
 
 # 送信後に自動的に会話を更新し表示
-if "input_text" in st.session_state and st.session_state.input_text:
-    question = st.session_state.input_text
+if submitted and question:
     params = adjust_parameters(question)
     discussion = generate_discussion(question, params)
     st.session_state.discussion = discussion
+
+if st.session_state.get("discussion"):
     display_line_style(st.session_state.discussion)
