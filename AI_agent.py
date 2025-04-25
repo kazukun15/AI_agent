@@ -104,29 +104,29 @@ def generate_summary(discussion: str) -> str:
 
 def display_line_style(discussion: str):
     """LINE風のバブルチャットをHTMLでレンダリング。# chat-container で自動スクロール設定"""
-    # CSS + JS インジェクション
-    st.markdown("""
-    <style>
-    #chat-container { overflow-y: auto; height: calc(100vh - 100px); padding-bottom: 80px; }
-    .bubble { position: relative; margin: 6px 0; padding: 8px 12px; border-radius: 16px; max-width: 70%; word-wrap: break-word; }
-    .bubble::after { content: ''; position: absolute; width: 0; height: 0; border: 8px solid transparent; }
-    .bubble-left::after { top: 0; left: -16px; border-right-color: inherit; border-left: 0; margin-top: 4px; }
-    .bubble-right::after { top: 0; right: -16px; border-left-color: inherit; border-right: 0; margin-top: 4px; }
-    #input-area { position: fixed; bottom: 0; left: 0; width: 100%; background: #fff; padding: 10px; box-shadow: 0 -2px 5px rgba(0,0,0,0.1); }
-    </style>
-    <script>
-    function scrollChat() {
-      const chat = document.getElementById('chat-container');
-      if (chat) { chat.scrollTop = chat.scrollHeight; }
-    }
-    setTimeout(scrollChat, 100);
-    </script>
-    <div id="chat-container"></div>
-    """, unsafe_allow_html=True)
-
-    # 会話バブルを chat-container に追加
+    st.markdown(
+        """
+        <style>
+        #chat-container { overflow-y: auto; height: calc(100vh - 120px); padding-bottom: 100px; }
+        .bubble { position: relative; margin: 6px 0; padding: 8px 12px; border-radius: 16px; max-width: 70%; word-wrap: break-word; }
+        .bubble::after { content: ''; position: absolute; width: 0; height: 0; border: 8px solid transparent; }
+        .bubble-left::after { top: 0; left: -16px; border-right-color: inherit; border-left: 0; margin-top: 4px; }
+        .bubble-right::after { top: 0; right: -16px; border-left-color: inherit; border-right: 0; margin-top: 4px; }
+        #input-area { position: fixed; bottom: 0; left: 0; width: 100%; background: #fff; padding: 10px; box-shadow: 0 -2px 5px rgba(0,0,0,0.1); }
+        </style>
+        <script>
+        function scrollChat() {
+          const chat = document.getElementById('chat-container');
+          if (chat) { chat.scrollTop = chat.scrollHeight; }
+        }
+        setTimeout(scrollChat, 100);
+        </script>
+        <div id="chat-container"></div>
+        """, unsafe_allow_html=True
+    )
     for line in discussion.splitlines():
-        if not line.strip(): continue
+        if not line.strip():
+            continue
         m = re.match(r"^(.*?):\s*(.*)$", line)
         if m:
             name, msg = m.group(1), m.group(2)
@@ -140,8 +140,10 @@ def display_line_style(discussion: str):
             <strong>{name}</strong><br>{msg}
         </div>
         """
-        # chat-container 内に追加
-        st.markdown(f"<script>document.getElementById('chat-container').insertAdjacentHTML('beforeend', `{html}`)</script>", unsafe_allow_html=True)
+        st.markdown(
+            f"<script>document.getElementById('chat-container').insertAdjacentHTML('beforeend', `{html}`)</script>",
+            unsafe_allow_html=True
+        )
 
 # ========================
 #    Streamlit アプリ本体
@@ -162,13 +164,13 @@ if "summary" not in st.session_state:
 st.markdown("<div id='input-area'>", unsafe_allow_html=True)
 with st.form("input_form"):
     question = st.text_area("", placeholder="質問を入力してください…", key="input_text", height=50)
-    st.form_submit_button("送信")
+    submitted = st.form_submit_button("送信")
 st.markdown("</div>", unsafe_allow_html=True)
 
-# ボタン処理はフォームボタン後に検知
-if st.session_state.get("input_text"):
+# 送信後に自動的に会話を更新し表示
+if "input_text" in st.session_state and st.session_state.input_text:
     question = st.session_state.input_text
     params = adjust_parameters(question)
     discussion = generate_discussion(question, params)
     st.session_state.discussion = discussion
-``
+    display_line_style(st.session_state.discussion)
