@@ -52,7 +52,6 @@ def clean_response(text: str) -> str:
     """JSONアーティファクトを除去してテキストを整形。"""
     if not text:
         return ""
-    # 単純にモデル出力のパーツ結合を想定
     text = re.sub(r"\{'text':\s*'(.*?)'\}", r"\1", text)
     return text.strip()
 
@@ -104,20 +103,30 @@ def generate_summary(discussion: str) -> str:
 
 
 def display_line_style(discussion: str):
-    """LINE風のバブルチャットをHTMLでレンダリング。"""
-    # CSS インジェクション
+    """LINE風のバブルチャットをHTMLでレンダリング。# chat-container で自動スクロール設定"""
+    # CSS + JS インジェクション
     st.markdown("""
     <style>
+    #chat-container { overflow-y: auto; height: calc(100vh - 100px); padding-bottom: 80px; }
     .bubble { position: relative; margin: 6px 0; padding: 8px 12px; border-radius: 16px; max-width: 70%; word-wrap: break-word; }
     .bubble::after { content: ''; position: absolute; width: 0; height: 0; border: 8px solid transparent; }
     .bubble-left::after { top: 0; left: -16px; border-right-color: inherit; border-left: 0; margin-top: 4px; }
     .bubble-right::after { top: 0; right: -16px; border-left-color: inherit; border-right: 0; margin-top: 4px; }
+    #input-area { position: fixed; bottom: 0; left: 0; width: 100%; background: #fff; padding: 10px; box-shadow: 0 -2px 5px rgba(0,0,0,0.1); }
     </style>
+    <script>
+    function scrollChat() {
+      const chat = document.getElementById('chat-container');
+      if (chat) { chat.scrollTop = chat.scrollHeight; }
+    }
+    setTimeout(scrollChat, 100);
+    </script>
+    <div id="chat-container"></div>
     """, unsafe_allow_html=True)
 
+    # 会話バブルを chat-container に追加
     for line in discussion.splitlines():
-        if not line.strip():
-            continue
+        if not line.strip(): continue
         m = re.match(r"^(.*?):\s*(.*)$", line)
         if m:
             name, msg = m.group(1), m.group(2)
@@ -131,7 +140,8 @@ def display_line_style(discussion: str):
             <strong>{name}</strong><br>{msg}
         </div>
         """
-        st.markdown(html, unsafe_allow_html=True)
+        # chat-container 内に追加
+        st.markdown(f"<script>document.getElementById('chat-container').insertAdjacentHTML('beforeend', `{html}`)</script>", unsafe_allow_html=True)
 
 # ========================
 #    Streamlit アプリ本体
@@ -148,28 +158,17 @@ if "summary" not in st.session_state:
     st.session_state.summary = ""
 
 # --- 質問入力と操作 ---
+# input-area を固定表示
+st.markdown("<div id='input-area'>", unsafe_allow_html=True)
 with st.form("input_form"):
-    question = st.text_area("質問を入力してください", placeholder="例: 〇〇〇について考えてください。", height=140)
-    start_btn = st.form_submit_button("会話を開始")
-    summary_btn = st.form_submit_button("会話をまとめる")
+    question = st.text_area("", placeholder="質問を入力してください…", key="input_text", height=50)
+    st.form_submit_button("送信")
+st.markdown("</div>", unsafe_allow_html=True)
 
-# 会話開始
-if start_btn:
-    if question.strip():
-        params = adjust_parameters(question)
-        discussion = generate_discussion(question, params)
-        st.session_state.discussion = discussion
-        st.write("### 3人の会話")
-        display_line_style(discussion)
-    else:
-        st.warning("質問を入力してください。")
-
-# まとめ生成
-if summary_btn:
-    if st.session_state.discussion:
-        summary = generate_summary(st.session_state.discussion)
-        st.session_state.summary = summary
-        st.write("### まとめ回答")
-        st.markdown(f"**まとめ:** {summary}")
-    else:
-        st.warning("まずは会話を開始してください。")
+# ボタン処理はフォームボタン後に検知
+if st.session_state.get("input_text"):
+    question = st.session_state.input_text
+    params = adjust_parameters(question)
+    discussion = generate_discussion(question, params)
+    st.session_state.discussion = discussion
+``
