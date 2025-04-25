@@ -1,6 +1,15 @@
+import os
 import streamlit as st
 import requests
 import re
+from openai import OpenAI
+
+# ========================
+#    APIクライアント設定
+# ========================
+client = OpenAI(
+    api_key=os.environ.get("OPENAI_API_KEY"),
+)
 
 # ========================
 #    定数／設定
@@ -28,6 +37,7 @@ st.markdown("""
     padding: 10px 14px;
     border-radius: 16px;
     word-wrap: break-word;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.1);
   }
   .bubble-yukari { background-color: #DCF8C6; align-self: flex-start;  }
   .bubble-shinya { background-color: #E0F7FA; align-self: flex-end;    }
@@ -45,7 +55,7 @@ st.markdown("""
   }
 </style>
 <script>
-  // 自動スクロール（scrollTop/scrollHeight 利用） :contentReference[oaicite:5]{index=5}
+  // 自動スクロール
   window.onload = () => {
     const el = document.getElementById("chat-container");
     if (el) el.scrollTop = el.scrollHeight;
@@ -87,45 +97,35 @@ def adjust_params(q: str) -> dict:
         }
 
 # ========================
-#    Gemini API 呼び出し
+#    ChatGPT レスポンス取得
 # ========================
-def call_gemini(prompt: str) -> str:
-    url = (
-        f"https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
+def response_chatgpt(prompt: str) -> str:
+    """OpenAI のストリーミング ChatCompletion で逐次応答を取得"""
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        stream=True,
     )
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    headers = {"Content-Type": "application/json"}
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=15)
-        if res.status_code != 200:
-            return f"APIエラー: {res.status_code}"
-        data = res.json()
-        cands = data.get("candidates", [])
-        if not cands:
-            return "（回答なし）"
-        content = cands[0].get("content", "")
-        if isinstance(content, dict):
-            parts = content.get("parts", [])
-            return "".join(p.get("text","") for p in parts).strip()
-        return str(content).strip()
-    except Exception as e:
-        return f"通信失敗: {e}"
+    text = ""
+    for chunk in response:
+        delta = chunk.choices[0].delta.get("content", "")
+        text += delta
+    return text.strip()
 
 # ========================
 #    会話生成・表示ヘルパー
 # ========================
 def gen_discussion(q: str) -> str:
     params = adjust_params(q)
-    p = f"【ユーザーの質問】\n{q}\n\n"
+    prompt = f"【ユーザーの質問】\n{q}\n\n"
     for name, cfg in params.items():
-        p += f"{name}はで、{cfg['detail']}。\n"
-    p += "\n以上の設定で3人が友達同士のように自然に会話してください。"
-    return call_gemini(p)
+        prompt += f"{name}は【{cfg['style']}】で、{cfg['detail']}。\n"
+    prompt += "\n以上の設定で3人が友達同士のように自然に会話してください。"
+    return response_chatgpt(prompt)
 
 def gen_summary(disc: str) -> str:
-    p = f"以下は3人の会話です：\n{disc}\n\nこの内容を踏まえたまとめを自然な日本語で作成してください。"
-    return call_gemini(p)
+    prompt = f"以下は3人の会話です：\n{disc}\n\nこの内容を踏まえたまとめを自然な日本語で作成してください。"
+    return response_chatgpt(prompt)
 
 def render_bubbles(text: str):
     for line in text.split("\n"):
@@ -154,15 +154,15 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 # — 入力エリア（固定） —
 st.markdown('<div id="input-area">', unsafe_allow_html=True)
-with st.form("chat_form", clear_on_submit=True, enter_to_submit=True):  # Enter 送信可 :contentReference[oaicite:6]{index=6}
+with st.form("chat_form", clear_on_submit=True, enter_to_submit=True):
     user_q = st.text_area(
-        label="質問",                     # 空文字禁止 :contentReference[oaicite:7]{index=7}
-        placeholder="質問を入力…",         # プレースホルダー :contentReference[oaicite:8]{index=8}
-        key="input_q",                  # 一意のキー付与 :contentReference[oaicite:9]{index=9}
-        height=150,                     # 150px の高さ（95px 未満は無視） :contentReference[oaicite:10]{index=10}
-        label_visibility="collapsed"    # 非表示化 :contentReference[oaicite:11]{index=11}
+        label="質問",
+        placeholder="質問を入力…",
+        key="input_q",
+        height=150,
+        label_visibility="collapsed"
     )
-    send  = st.form_submit_button("送信")  # フォーム内に必須 :contentReference[oaicite:12]{index=12}
+    send        = st.form_submit_button("送信")
     summary_btn = st.form_submit_button("まとめ表示")
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -171,6 +171,7 @@ if send and user_q.strip():
     st.session_state.discussion = gen_discussion(user_q)
     st.session_state.summary    = ""
     st.experimental_rerun()
+
 if summary_btn and st.session_state.discussion:
     st.session_state.summary = gen_summary(st.session_state.discussion)
     st.experimental_rerun()
