@@ -27,7 +27,6 @@ st.markdown("""
     margin: 5px;
     padding: 10px 14px;
     border-radius: 16px;
-    position: relative;
     word-wrap: break-word;
   }
   .bubble-yukari { background-color: #DCF8C6; align-self: flex-start;  }
@@ -46,12 +45,11 @@ st.markdown("""
   }
 </style>
 <script>
-  // 自動スクロール
-  const scrollToBottom = () => {
+  // 自動スクロール（scrollTop/scrollHeight 利用） :contentReference[oaicite:5]{index=5}
+  window.onload = () => {
     const el = document.getElementById("chat-container");
     if (el) el.scrollTop = el.scrollHeight;
   };
-  window.onload = scrollToBottom;
 </script>
 """, unsafe_allow_html=True)
 
@@ -121,7 +119,7 @@ def gen_discussion(q: str) -> str:
     params = adjust_params(q)
     p = f"【ユーザーの質問】\n{q}\n\n"
     for name, cfg in params.items():
-        p += f"{name}は【{cfg['style']}】で、{cfg['detail']}。\n"
+        p += f"{name}はで、{cfg['detail']}。\n"
     p += "\n以上の設定で3人が友達同士のように自然に会話してください。"
     return call_gemini(p)
 
@@ -156,16 +154,16 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 # — 入力エリア（固定） —
 st.markdown('<div id="input-area">', unsafe_allow_html=True)
-with st.form("chat_form", clear_on_submit=True):
+with st.form("chat_form", clear_on_submit=True, enter_to_submit=True):  # Enter 送信可 :contentReference[oaicite:6]{index=6}
     user_q = st.text_area(
-        label="質問",
-        placeholder="質問を入力…",
-        key="input_q",
-        height=60,
-        label_visibility="collapsed"
+        label="質問",                     # 空文字禁止 :contentReference[oaicite:7]{index=7}
+        placeholder="質問を入力…",         # プレースホルダー :contentReference[oaicite:8]{index=8}
+        key="input_q",                  # 一意のキー付与 :contentReference[oaicite:9]{index=9}
+        height=150,                     # 150px の高さ（95px 未満は無視） :contentReference[oaicite:10]{index=10}
+        label_visibility="collapsed"    # 非表示化 :contentReference[oaicite:11]{index=11}
     )
-    send  = st.form_submit_button("送信")
-    summ  = st.form_submit_button("まとめ表示")
+    send  = st.form_submit_button("送信")  # フォーム内に必須 :contentReference[oaicite:12]{index=12}
+    summary_btn = st.form_submit_button("まとめ表示")
 st.markdown('</div>', unsafe_allow_html=True)
 
 # — 送信処理 —
@@ -173,6 +171,6 @@ if send and user_q.strip():
     st.session_state.discussion = gen_discussion(user_q)
     st.session_state.summary    = ""
     st.experimental_rerun()
-if summ and st.session_state.discussion:
+if summary_btn and st.session_state.discussion:
     st.session_state.summary = gen_summary(st.session_state.discussion)
     st.experimental_rerun()
