@@ -1,91 +1,89 @@
 import streamlit as st
 import requests
 import re
-import random
 
 # ========================
 #    定数／設定
 # ========================
-# st.secrets を利用してAPIキーを隠す（.streamlit/secrets.toml に記述しておく）
 API_KEY = st.secrets["general"]["api_key"]
-MODEL_NAME = "gemini-1.5-flash"
-NAMES = ["ゆかり", "しんや", "みのる"]
+MODEL_NAME = "gemini-2.0-flash-thinking-exp-01-21"
+
+# 各キャラクタのスタイル設定
+PERSONAS = {
+    "ゆかり": {"bg": "#DCF8C6", "align": "right"},
+    "しんや": {"bg": "#FFFFFF", "align": "left"},
+    "みのる": {"bg": "#FCE4EC", "align": "left"}
+}
 
 # ========================
-#    関数定義
+#    ヘルパー関数
 # ========================
 
 def analyze_question(question: str) -> int:
+    """質問文から感情スコアを算出（肯定的な感情が多ければ+、論理的なキーワードが多ければ-）。"""
     score = 0
-    keywords_emotional = ["困った", "悩み", "苦しい", "辛い"]
-    keywords_logical = ["理由", "原因", "仕組み", "方法"]
-    for word in keywords_emotional:
-        if re.search(word, question):
+    for w in ["困った", "悩み", "苦しい", "辛い"]:
+        if w in question:
             score += 1
-    for word in keywords_logical:
-        if re.search(word, question):
+    for w in ["理由", "原因", "仕組み", "方法"]:
+        if w in question:
             score -= 1
     return score
 
-def adjust_parameters(question: str) -> dict:
-    score = analyze_question(question)
-    params = {}
-    if score > 0:
-        params["ゆかり"] = {"style": "情熱的", "detail": "感情に寄り添う回答"}
-        params["しんや"] = {"style": "共感的", "detail": "心情を重視した解説"}
-        params["みのる"] = {"style": "柔軟", "detail": "状況に合わせた多面的な視点"}
-    else:
-        params["ゆかり"] = {"style": "論理的", "detail": "具体的な解説を重視"}
-        params["しんや"] = {"style": "分析的", "detail": "データや事実を踏まえた説明"}
-        params["みのる"] = {"style": "客観的", "detail": "中立的な視点からの考察"}
-    return params
 
-def remove_json_artifacts(text: str) -> str:
-    if not isinstance(text, str):
-        text = str(text) if text else ""
-    pattern = r"'parts': \[\{'text':.*?\}\], 'role': 'model'"
-    cleaned = re.sub(pattern, "", text, flags=re.DOTALL)
-    return cleaned.strip()
+def adjust_parameters(question: str) -> dict:
+    """質問のスコアに応じて、各キャラの回答スタイルを決定。"""
+    score = analyze_question(question)
+    if score > 0:
+        return {
+            "ゆかり": {"style": "情熱的", "detail": "感情に寄り添う回答"},
+            "しんや": {"style": "共感的", "detail": "心情を重視した解説"},
+            "みのる": {"style": "柔軟", "detail": "状況に合わせた多面的な視点"}
+        }
+    else:
+        return {
+            "ゆかり": {"style": "論理的", "detail": "具体的な解説を重視"},
+            "しんや": {"style": "分析的", "detail": "データや事実を踏まえた説明"},
+            "みのる": {"style": "客観的", "detail": "中立的な視点からの考察"}
+        }
+
+
+def clean_response(text: str) -> str:
+    """JSONアーティファクトを除去してテキストを整形。"""
+    if not text:
+        return ""
+    # 単純にモデル出力のパーツ結合を想定
+    text = re.sub(r"\{'text':\s*'(.*?)'\}", r"\1", text)
+    return text.strip()
+
 
 def call_gemini_api(prompt: str) -> str:
+    """Gemini API を呼び出し、テキストを返す。"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
     headers = {"Content-Type": "application/json"}
+    res = requests.post(url, json=payload, headers=headers)
+    if res.status_code != 200:
+        return f"エラー: ステータス {res.status_code} - {res.text}"
+    data = res.json()
+    parts = []
     try:
-        response = requests.post(url, json=payload, headers=headers)
-    except Exception as e:
-        return f"エラー: リクエスト送信時に例外が発生しました -> {str(e)}"
-    if response.status_code != 200:
-        return f"エラー: ステータスコード {response.status_code} -> {response.text}"
-    try:
-        rjson = response.json()
-        candidates = rjson.get("candidates", [])
-        if not candidates:
-            return "回答が見つかりませんでした。(candidatesが空)"
-        candidate0 = candidates[0]
-        content_val = candidate0.get("content", "")
-        if isinstance(content_val, dict):
-            parts = content_val.get("parts", [])
-            content_str = " ".join([p.get("text", "") for p in parts])
-        else:
-            content_str = str(content_val)
-        content_str = content_str.strip()
-        if not content_str:
-            return "回答が見つかりませんでした。(contentが空)"
-        return remove_json_artifacts(content_str)
-    except Exception as e:
-        return f"エラー: レスポンス解析に失敗しました -> {str(e)}"
+        candidates = data.get("candidates", [])
+        for c in candidates:
+            content = c.get("content", {})
+            for p in content.get("parts", []):
+                parts.append(p.get("text", ""))
+    except Exception:
+        return "エラー: レスポンス解析失敗"
+    return clean_response("".join(parts))
 
-def generate_discussion(question: str, persona_params: dict) -> str:
+
+def generate_discussion(question: str, params: dict) -> str:
     prompt = f"【ユーザーの質問】\n{question}\n\n"
-    for name, params in persona_params.items():
-        prompt += f"{name}は【{params['style']}な視点】で、{params['detail']}。\n"
+    for name, info in params.items():
+        prompt += f"{name}は【{info['style']}な視点】で、{info['detail']}。\n"
     prompt += (
-        "\n上記情報を元に、3人が友達同士のように自然な会話をしてください。\n"
+        "\n上記情報を元に、3人が友達同士のように自然な会話をしてください。"
         "出力形式は以下の通りです。\n"
         "ゆかり: 発言内容\n"
         "しんや: 発言内容\n"
@@ -94,83 +92,83 @@ def generate_discussion(question: str, persona_params: dict) -> str:
     )
     return call_gemini_api(prompt)
 
+
 def generate_summary(discussion: str) -> str:
     prompt = (
         "以下は3人の会話内容です。\n"
         f"{discussion}\n\n"
-        "この会話を踏まえて、質問に対するまとめ回答を生成してください。\n"
+        "この会話を踏まえて、質問に対するまとめ回答を生成してください。"
         "自然な日本語文で出力し、余計なJSON形式は不要です。"
     )
     return call_gemini_api(prompt)
 
-def display_line_style(text: str):
-    lines = text.split("\n")
-    color_map = {
-        "ゆかり": {"bg": "#DCF8C6", "color": "#333"},
-        "しんや": {"bg": "#E0F7FA", "color": "#333"},
-        "みのる": {"bg": "#FCE4EC", "color": "#333"}
-    }
-    for line in lines:
-        line = line.strip()
-        if not line:
+
+def display_line_style(discussion: str):
+    """LINE風のバブルチャットをHTMLでレンダリング。"""
+    # CSS インジェクション
+    st.markdown("""
+    <style>
+    .bubble { position: relative; margin: 6px 0; padding: 8px 12px; border-radius: 16px; max-width: 70%; word-wrap: break-word; }
+    .bubble::after { content: ''; position: absolute; width: 0; height: 0; border: 8px solid transparent; }
+    .bubble-left::after { top: 0; left: -16px; border-right-color: inherit; border-left: 0; margin-top: 4px; }
+    .bubble-right::after { top: 0; right: -16px; border-left-color: inherit; border-right: 0; margin-top: 4px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    for line in discussion.splitlines():
+        if not line.strip():
             continue
-        matched = re.match(r"^(.*?):\s*(.*)$", line)
-        if matched:
-            name = matched.group(1)
-            message = matched.group(2)
+        m = re.match(r"^(.*?):\s*(.*)$", line)
+        if m:
+            name, msg = m.group(1), m.group(2)
         else:
-            name = ""
-            message = line
-        styles = color_map.get(name, {"bg": "#F5F5F5", "color": "#333"})
-        bg_color = styles["bg"]
-        text_color = styles["color"]
-        bubble_html = f"""
-        <div style="
-            background-color: {bg_color};
-            border:1px solid #ddd;
-            border-radius:10px;
-            padding:8px;
-            margin:5px 0;
-            width: fit-content;
-            color: {text_color};
-            font-family: Arial, sans-serif;
-        ">
-            <strong>{name}</strong><br>
-            {message}
+            name, msg = "", line
+        persona = PERSONAS.get(name, {"bg": "#F0F0F0", "align": "left"})
+        align = persona['align']
+        css_class = "bubble-right" if align == 'right' else "bubble-left"
+        html = f"""
+        <div class="bubble {css_class}" style="background:{persona['bg']}; margin-{'left' if align=='left' else 'right'}: auto;">
+            <strong>{name}</strong><br>{msg}
         </div>
         """
-        st.markdown(bubble_html, unsafe_allow_html=True)
+        st.markdown(html, unsafe_allow_html=True)
 
 # ========================
-#    Streamlit アプリ
+#    Streamlit アプリ本体
 # ========================
-st.title("ぼくのともだち ")
 
-# --- 質問入力エリア ---
-question = st.text_area("質問を入力してください", placeholder="例: 〇〇〇について考えてください。", height=150)
+st.set_page_config(page_title="ぼくのともだち", layout="wide")
 
-# セッション状態の初期化
+st.title("💬 ぼくのともだち")
+
+# セッションステート初期化
 if "discussion" not in st.session_state:
-    st.session_state["discussion"] = ""
+    st.session_state.discussion = ""
 if "summary" not in st.session_state:
-    st.session_state["summary"] = ""
+    st.session_state.summary = ""
 
-# --- 会話生成ボタン ---
-if st.button("会話を開始"):
+# --- 質問入力と操作 ---
+with st.form("input_form"):
+    question = st.text_area("質問を入力してください", placeholder="例: 〇〇〇について考えてください。", height=140)
+    start_btn = st.form_submit_button("会話を開始")
+    summary_btn = st.form_submit_button("会話をまとめる")
+
+# 会話開始
+if start_btn:
     if question.strip():
-        persona_params = adjust_parameters(question)
-        discussion = generate_discussion(question, persona_params)
-        st.session_state["discussion"] = discussion  # 会話履歴として保存
+        params = adjust_parameters(question)
+        discussion = generate_discussion(question, params)
+        st.session_state.discussion = discussion
         st.write("### 3人の会話")
         display_line_style(discussion)
     else:
         st.warning("質問を入力してください。")
 
-# --- まとめ回答生成ボタン ---
-if st.button("会話をまとめる"):
-    if st.session_state["discussion"]:
-        summary = generate_summary(st.session_state["discussion"])
-        st.session_state["summary"] = summary
+# まとめ生成
+if summary_btn:
+    if st.session_state.discussion:
+        summary = generate_summary(st.session_state.discussion)
+        st.session_state.summary = summary
         st.write("### まとめ回答")
         st.markdown(f"**まとめ:** {summary}")
     else:
