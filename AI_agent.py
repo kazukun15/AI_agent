@@ -1,17 +1,21 @@
 import streamlit as st
-import requests
+import asyncio
+import httpx
+from functools import lru_cache
 import re
 
-# ========================
-#    定数／設定
-# ========================
-API_KEY    = st.secrets["general"]["api_key"]
-MODEL_NAME = "gemini-2.0-flash-lite"   # 高速 Flash-Lite モデル
-PERSONAS   = ["ゆかり", "しんや", "みのる"]
+# ─── ページ設定 ────────────────────────────────────────
+st.set_page_config(
+    page_title="ぼくのともだち (AR対応版)",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-# ========================
-#    CSS／JS 埋め込み
-# ========================
+# ─── 定数／モデル設定 ──────────────────────────────────
+API_KEY    = st.secrets["general"]["api_key"]
+MODEL_NAME = "gemini-2.0-flash-lite"   # 低レイテンシ／高スループットモデル
+
+# ─── CSS／JavaScript 埋め込み ───────────────────────────
 st.markdown("""
 <style>
   /* チャット領域 */
@@ -19,31 +23,76 @@ st.markdown("""
     display: flex;
     flex-direction: column;
     padding: 10px;
-    padding-bottom: 100px;  /* 入力欄と重ならない余白 */
-    height: calc(100vh - 120px);
+    padding-bottom: 120px;  /* 入力欄のスペース確保 */
+    height: calc(100vh - 140px);
     overflow-y: auto;
   }
   .chat-bubble {
     max-width: 70%;
-    margin: 5px;
+    margin: 6px;
     padding: 10px 14px;
-    border-radius: 16px;
+    border-radius: 18px;
     word-wrap: break-word;
-    box-shadow: 0 1px 1px rgba(0,0,0,0.1);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.4;
+    transition: opacity 0.3s ease;
   }
   .bubble-yukari { background-color: #DCF8C6; align-self: flex-start; }
   .bubble-shinya { background-color: #E0F7FA; align-self: flex-end; }
   .bubble-minoru { background-color: #FCE4EC; align-self: flex-start; }
 
+  /* ローディングスケルトン */
+  .chat-bubble.loading {
+    background-color: #f0f0f0;
+    color: transparent;
+    position: relative;
+  }
+  .chat-bubble.loading::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(
+      90deg,
+      rgba(255,255,255,0) 0%,
+      rgba(255,255,255,0.6) 50%,
+      rgba(255,255,255,0) 100%
+    );
+    animation: shimmer 1.2s infinite;
+    border-radius: 18px;
+  }
+  @keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
   /* 入力エリア固定 */
   #input-area {
     position: fixed;
-    bottom: 0;
-    left: 0;
+    bottom: 0; left: 0;
     width: 100%;
-    background-color: #FFFFFF;
-    padding: 10px 20px;
-    box-shadow: 0 -2px 5px rgba(0,0,0,0.1);
+    background-color: #fff;
+    box-shadow: 0 -2px 6px rgba(0,0,0,0.1);
+    padding: 12px 20px;
+  }
+  #input-area textarea {
+    width: 80%; height: 50px;
+    resize: none;
+    border-radius: 12px;
+    border: 1px solid #ccc;
+    padding: 8px;
+    font-size: 16px;
+  }
+  #input-area button {
+    width: 15%;
+    margin-left: 5%;
+    padding: 10px;
+    font-size: 16px;
+    border: none;
+    border-radius: 12px;
+    background-color: #4CAF50;
+    color: white;
+    cursor: pointer;
   }
 </style>
 <script>
@@ -52,128 +101,82 @@ st.markdown("""
     const el = document.getElementById("chat-container");
     if (el) el.scrollTop = el.scrollHeight;
   }
-  window.onload = scrollToBottom;
+  window.addEventListener("DOMContentLoaded", scrollToBottom);
 </script>
 """, unsafe_allow_html=True)
 
-# ========================
-#    セッションステート初期化
-# ========================
-if "discussion" not in st.session_state:
-    st.session_state.discussion = ""
-if "summary" not in st.session_state:
-    st.session_state.summary = ""
-
-# ========================
-#    質問分析・パラメータ調整
-# ========================
-def analyze_question(q: str) -> int:
-    score = 0
-    for w in ["困った","悩み","苦しい","辛い"]:
-        if w in q: score += 1
-    for w in ["理由","原因","仕組み","方法"]:
-        if w in q: score -= 1
-    return score
-
-def adjust_params(q: str) -> dict:
-    if analyze_question(q) > 0:
-        return {
-            "ゆかり": {"style": "情熱的", "detail": "感情に寄り添う回答"},
-            "しんや": {"style": "共感的", "detail": "心情を重視した解説"},
-            "みのる": {"style": "柔軟",   "detail": "多面的な視点での提案"},
-        }
-    else:
-        return {
-            "ゆかり": {"style": "論理的", "detail": "具体的な解説を重視"},
-            "しんや": {"style": "分析的", "detail": "データ・事実に基づく説明"},
-            "みのる": {"style": "客観的", "detail": "中立的な視点からの考察"},
-        }
-
-# ========================
-#    Gemini API 呼び出し
-# ========================
-def call_gemini(prompt: str) -> str:
-    url = (
-        f"https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
-    )
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+# ─── 非同期呼び出し＋キャッシュ ─────────────────────────────
+@lru_cache(maxsize=128)
+async def fetch_response_async(prompt: str) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
     headers = {"Content-Type": "application/json"}
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=15)
-        if res.status_code != 200:
-            return f"APIエラー: ステータスコード {res.status_code}"
-        data = res.json()
-        cands = data.get("candidates", [])
-        if not cands:
-            return "（回答なし）"
-        content = cands[0].get("content", "")
-        if isinstance(content, dict):
-            parts = content.get("parts", [])
-            return "".join(p.get("text","") for p in parts).strip()
-        return str(content).strip()
-    except Exception as e:
-        return f"通信失敗: {e}"
+    json_data = {"contents":[{"parts":[{"text":prompt}]}]}
+    for retry in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(url, json=json_data, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                parts = data["candidates"][0]["content"]["parts"]
+                return "".join(p["text"] for p in parts).strip()
+        except Exception:
+            await asyncio.sleep(2 ** retry)
+    return "通信エラーが発生しました。オフラインモードです。"
 
-# ========================
-#    会話生成・表示ヘルパー
-# ========================
-def gen_discussion(q: str) -> str:
-    params = adjust_params(q)
-    prompt = f"【ユーザーの質問】\n{q}\n\n"
-    for name, cfg in params.items():
-        prompt += f"{name}は【{cfg['style']}】で、{cfg['detail']}。\n"
-    prompt += "\n以上の設定で3人が友達同士のように自然に会話してください。"
-    return call_gemini(prompt)
+# ─── UI描画ヘルパー ─────────────────────────────────────
+def render_loading_skeleton():
+    st.markdown(
+        '<div class="chat-bubble loading">　</div>',
+        unsafe_allow_html=True
+    )
 
-def gen_summary(disc: str) -> str:
-    prompt = f"以下は3人の会話です：\n{disc}\n\nこの内容を踏まえたまとめを自然な日本語で作成してください。"
-    return call_gemini(prompt)
+def render_chat_bubble(name: str, msg: str):
+    cls = {
+        "ゆかり": "bubble-yukari",
+        "しんや": "bubble-shinya",
+        "みのる": "bubble-minoru"
+    }[name]
+    safe_msg = re.sub(r'&', '&amp;', msg)  # 簡易エスケープ
+    safe_msg = re.sub(r'<', '&lt;', safe_msg)
+    safe_msg = re.sub(r'>', '&gt;', safe_msg)
+    st.markdown(f'<div class="chat-bubble {cls}">{safe_msg}</div>', unsafe_allow_html=True)
 
-def render_bubbles(text: str):
-    for line in text.split("\n"):
-        m = re.match(r"^(ゆかり|しんや|みのる):\s*(.+)$", line)
-        if m:
-            name, msg = m.groups()
-            cls = {
-                "ゆかり":"bubble-yukari",
-                "しんや":"bubble-shinya",
-                "みのる":"bubble-minoru"
-            }[name]
-            st.markdown(f'<div class="chat-bubble {cls}">{msg}</div>', unsafe_allow_html=True)
+# ─── セッションステート初期化 ─────────────────────────────
+if "history" not in st.session_state:
+    st.session_state.history = []  # List[Tuple["user"|"ai", message:str]]
 
-# ========================
-#    アプリ本体
-# ========================
-st.title("ぼくのともだち")
-
-# — チャット履歴表示エリア —
-st.markdown('<div id="chat-container">', unsafe_allow_html=True)
-if st.session_state.discussion:
-    render_bubbles(st.session_state.discussion)
-if st.session_state.summary:
-    st.markdown(f'**まとめ:** {st.session_state.summary}')
-st.markdown('</div>', unsafe_allow_html=True)
-
-# — 入力エリア（固定） —
+# ─── 入力フォームと送信処理 ─────────────────────────────────
 st.markdown('<div id="input-area">', unsafe_allow_html=True)
 with st.form("chat_form", clear_on_submit=True, enter_to_submit=True):
     user_q = st.text_area(
         label="質問",
         placeholder="質問を入力…",
         key="input_q",
-        height=150,
+        height=50,
         label_visibility="collapsed"
     )
-    send_btn    = st.form_submit_button("送信")
-    summary_btn = st.form_submit_button("まとめ表示")
+    send_btn = st.form_submit_button("送信")
 st.markdown('</div>', unsafe_allow_html=True)
 
-# — 送信処理 —
 if send_btn and user_q.strip():
-    st.session_state.discussion = gen_discussion(user_q)
-    st.session_state.summary    = ""
-    st.experimental_rerun()
-if summary_btn and st.session_state.discussion:
-    st.session_state.summary = gen_summary(st.session_state.discussion)
-    st.experimental_rerun()
+    # ① ユーザーメッセージを履歴に追加
+    st.session_state.history.append(("user", user_q))
+    # ② ローディングスケルトンを描画
+    render_loading_skeleton()
+    # ③ 非同期にAPIを呼び出し、結果を取得
+    resp = asyncio.run(fetch_response_async(user_q))
+    # ④ AIレスポンスを履歴に追加
+    st.session_state.history.append(("ai", resp))
+    # ⑤ 入力欄をクリアして再描画
+    st.session_state.input_q = ""
+    st.rerun()
+
+# ─── チャット履歴表示エリア ─────────────────────────────────
+st.markdown('<div id="chat-container">', unsafe_allow_html=True)
+for role, text in st.session_state.history:
+    if role == "user":
+        render_chat_bubble("しんや", text)
+    else:
+        # ここではAI発言は「ゆかり」と仮定
+        render_chat_bubble("ゆかり", text)
+st.markdown('</div>', unsafe_allow_html=True)
