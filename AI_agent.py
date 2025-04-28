@@ -1,19 +1,19 @@
 import streamlit as st
-import asyncio
-import httpx
-from functools import lru_cache
+import requests
 import re
+import time
+from functools import lru_cache
 
 # ─── ページ設定 ────────────────────────────────────────
 st.set_page_config(
-    page_title="ぼくのともだち (AR対応版)",
+    page_title="ぼくのともだち",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 # ─── 定数／モデル設定 ──────────────────────────────────
 API_KEY    = st.secrets["general"]["api_key"]
-MODEL_NAME = "gemini-2.0-flash-lite"   # 低レイテンシ／高スループットモデル
+MODEL_NAME = "gemini-2.0-flash-lite"
 
 # ─── CSS／JavaScript 埋め込み ───────────────────────────
 st.markdown("""
@@ -23,7 +23,7 @@ st.markdown("""
     display: flex;
     flex-direction: column;
     padding: 10px;
-    padding-bottom: 120px;  /* 入力欄のスペース確保 */
+    padding-bottom: 120px;
     height: calc(100vh - 140px);
     overflow-y: auto;
   }
@@ -105,22 +105,30 @@ st.markdown("""
 </script>
 """, unsafe_allow_html=True)
 
-# ─── 非同期呼び出し＋キャッシュ ─────────────────────────────
+# ─── 同期API呼び出し＋リトライ ─────────────────────────────
 @lru_cache(maxsize=128)
-async def fetch_response_async(prompt: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
+def fetch_response(prompt: str) -> str:
+    url = (
+        f"https://generativelanguage.googleapis.com/"
+        f"v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
+    )
     headers = {"Content-Type": "application/json"}
-    json_data = {"contents":[{"parts":[{"text":prompt}]}]}
+    payload = {"contents":[{"parts":[{"text":prompt}]}]}
     for retry in range(3):
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(url, json=json_data, headers=headers)
-                r.raise_for_status()
-                data = r.json()
-                parts = data["candidates"][0]["content"]["parts"]
-                return "".join(p["text"] for p in parts).strip()
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            cands = data.get("candidates", [])
+            if not cands:
+                return "（回答なし）"
+            content = cands[0]["content"]
+            # content が dict なら parts から抽出
+            if isinstance(content, dict) and "parts" in content:
+                return "".join(p.get("text","") for p in content["parts"]).strip()
+            return str(content).strip()
         except Exception:
-            await asyncio.sleep(2 ** retry)
+            time.sleep(2 ** retry)
     return "通信エラーが発生しました。オフラインモードです。"
 
 # ─── UI描画ヘルパー ─────────────────────────────────────
@@ -131,21 +139,16 @@ def render_loading_skeleton():
     )
 
 def render_chat_bubble(name: str, msg: str):
-    cls = {
-        "ゆかり": "bubble-yukari",
-        "しんや": "bubble-shinya",
-        "みのる": "bubble-minoru"
-    }[name]
-    safe_msg = re.sub(r'&', '&amp;', msg)  # 簡易エスケープ
-    safe_msg = re.sub(r'<', '&lt;', safe_msg)
-    safe_msg = re.sub(r'>', '&gt;', safe_msg)
-    st.markdown(f'<div class="chat-bubble {cls}">{safe_msg}</div>', unsafe_allow_html=True)
+    cls = {"ゆかり":"bubble-yukari","しんや":"bubble-shinya","みのる":"bubble-minoru"}[name]
+    # 簡易エスケープ
+    safe = msg.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    st.markdown(f'<div class="chat-bubble {cls}">{safe}</div>', unsafe_allow_html=True)
 
 # ─── セッションステート初期化 ─────────────────────────────
 if "history" not in st.session_state:
-    st.session_state.history = []  # List[Tuple["user"|"ai", message:str]]
+    st.session_state.history = []  # List[Tuple[str,str]]
 
-# ─── 入力フォームと送信処理 ─────────────────────────────────
+# ─── 入力フォーム＋送信処理 ─────────────────────────────────
 st.markdown('<div id="input-area">', unsafe_allow_html=True)
 with st.form("chat_form", clear_on_submit=True, enter_to_submit=True):
     user_q = st.text_area(
@@ -159,15 +162,10 @@ with st.form("chat_form", clear_on_submit=True, enter_to_submit=True):
 st.markdown('</div>', unsafe_allow_html=True)
 
 if send_btn and user_q.strip():
-    # ① ユーザーメッセージを履歴に追加
     st.session_state.history.append(("user", user_q))
-    # ② ローディングスケルトンを描画
     render_loading_skeleton()
-    # ③ 非同期にAPIを呼び出し、結果を取得
-    resp = asyncio.run(fetch_response_async(user_q))
-    # ④ AIレスポンスを履歴に追加
+    resp = fetch_response(user_q)
     st.session_state.history.append(("ai", resp))
-    # ⑤ 入力欄をクリアして再描画
     st.session_state.input_q = ""
     st.rerun()
 
@@ -177,6 +175,5 @@ for role, text in st.session_state.history:
     if role == "user":
         render_chat_bubble("しんや", text)
     else:
-        # ここではAI発言は「ゆかり」と仮定
         render_chat_bubble("ゆかり", text)
 st.markdown('</div>', unsafe_allow_html=True)
