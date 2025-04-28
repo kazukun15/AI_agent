@@ -11,16 +11,16 @@ MODEL_NAME = "gemini-2.0-flash-lite"
 
 st.markdown("""
 <style>
-  /* チャット領域：下部余白を80pxに、全体高さも縮小 */
+  /* チャット領域：下部余白を160pxに拡大 */
   #chat-container {
     display: flex;
     flex-direction: column;
     padding: 10px;
-    padding-bottom: 80px;  
-    height: calc(100vh - 100px);
+    padding-bottom: 160px;  
+    height: calc(100vh - 180px);
     overflow-y: auto;
   }
-  /* バブル間隔を狭く、内側パディングも調整 */
+  /* バブル間隔とパディング */
   .chat-bubble {
     max-width: 70%;
     margin: 4px 0;
@@ -29,13 +29,12 @@ st.markdown("""
     word-wrap: break-word;
     box-shadow: 0 1px 2px rgba(0,0,0,0.1);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    line-height: 1.4;
   }
   .bubble-yukari { background-color: #DCF8C6; align-self: flex-start; }
   .bubble-shinya { background-color: #E0F7FA; align-self: flex-end; }
   .bubble-minoru { background-color: #FCE4EC; align-self: flex-start; }
 
-  /* ローディングスケルトンも margin 調整 */
+  /* ローディングスケルトン */
   .chat-bubble.loading {
     margin: 4px 0;
     background-color: #f0f0f0;
@@ -46,7 +45,12 @@ st.markdown("""
     content: '';
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
-    background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 50%, rgba(255,255,255,0) 100%);
+    background: linear-gradient(
+      90deg,
+      rgba(255,255,255,0) 0%,
+      rgba(255,255,255,0.6) 50%,
+      rgba(255,255,255,0) 100%
+    );
     animation: shimmer 1.2s infinite;
     border-radius: 18px;
   }
@@ -55,19 +59,18 @@ st.markdown("""
     100% { transform: translateX(100%); }
   }
 
-  /* 入力エリア固定：パディングを微調整 */
+  /* 入力エリア固定 */
   #input-area {
     position: fixed;
     bottom: 0; left: 0;
     width: 100%;
     background-color: #fff;
     box-shadow: 0 -2px 6px rgba(0,0,0,0.1);
-    padding: 8px 16px;
+    padding: 12px 20px;
   }
   #input-area label { display: none !important; }
   #input-area input {
-    width: 80%;
-    height: 40px;
+    width: 80%; height: 40px;
     padding: 6px 10px;
     font-size: 16px;
     border-radius: 12px;
@@ -134,6 +137,7 @@ with st.form("chat_form", clear_on_submit=True):
     send_btn = st.form_submit_button("送信")
 st.markdown('</div>', unsafe_allow_html=True)
 
+# メッセージ送信
 if send_btn and user_q.strip():
     st.session_state.history.append(("user", user_q))
     render_loading_skeleton()
@@ -141,7 +145,7 @@ if send_btn and user_q.strip():
     st.session_state.history.append(("ai", resp))
     st.rerun()
 
-# チャット表示
+# チャット表示＋直後に自動スクロール呼び出し
 st.markdown('<div id="chat-container">', unsafe_allow_html=True)
 for role, text in st.session_state.history:
     if role == "user":
@@ -149,3 +153,5 @@ for role, text in st.session_state.history:
     else:
         render_chat_bubble("ゆかり", text)
 st.markdown('</div>', unsafe_allow_html=True)
+# 新規メッセージ後にもスクロールをトリガー
+st.markdown("<script>scrollToBottom();</script>", unsafe_allow_html=True)
