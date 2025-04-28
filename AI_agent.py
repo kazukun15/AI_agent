@@ -23,7 +23,7 @@ st.markdown("""
     display: flex;
     flex-direction: column;
     padding: 10px;
-    padding-bottom: 120px;
+    padding-bottom: 120px;  /* 入力欄と重ならない余白 */
     height: calc(100vh - 140px);
     overflow-y: auto;
   }
@@ -36,7 +36,6 @@ st.markdown("""
     box-shadow: 0 1px 2px rgba(0,0,0,0.1);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     line-height: 1.4;
-    transition: opacity 0.3s ease;
   }
   .bubble-yukari { background-color: #DCF8C6; align-self: flex-start; }
   .bubble-shinya { background-color: #E0F7FA; align-self: flex-end; }
@@ -74,6 +73,10 @@ st.markdown("""
     background-color: #fff;
     box-shadow: 0 -2px 6px rgba(0,0,0,0.1);
     padding: 12px 20px;
+  }
+  /* ラベルは必須だが、ここで非表示に */
+  #input-area label {
+    display: none !important;
   }
   #input-area textarea {
     width: 80%; height: 50px;
@@ -123,7 +126,6 @@ def fetch_response(prompt: str) -> str:
             if not cands:
                 return "（回答なし）"
             content = cands[0]["content"]
-            # content が dict なら parts から抽出
             if isinstance(content, dict) and "parts" in content:
                 return "".join(p.get("text","") for p in content["parts"]).strip()
             return str(content).strip()
@@ -140,7 +142,6 @@ def render_loading_skeleton():
 
 def render_chat_bubble(name: str, msg: str):
     cls = {"ゆかり":"bubble-yukari","しんや":"bubble-shinya","みのる":"bubble-minoru"}[name]
-    # 簡易エスケープ
     safe = msg.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
     st.markdown(f'<div class="chat-bubble {cls}">{safe}</div>', unsafe_allow_html=True)
 
@@ -150,13 +151,12 @@ if "history" not in st.session_state:
 
 # ─── 入力フォーム＋送信処理 ─────────────────────────────────
 st.markdown('<div id="input-area">', unsafe_allow_html=True)
-with st.form("chat_form", clear_on_submit=True, enter_to_submit=True):
+with st.form("chat_form", clear_on_submit=True):
     user_q = st.text_area(
-        label="質問",
+        label="質問",        # 空文字ではなく必須
         placeholder="質問を入力…",
         key="input_q",
-        height=50,
-        label_visibility="collapsed"
+        height=50
     )
     send_btn = st.form_submit_button("送信")
 st.markdown('</div>', unsafe_allow_html=True)
