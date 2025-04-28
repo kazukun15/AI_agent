@@ -41,6 +41,30 @@ st.markdown("""
   .bubble-shinya { background-color: #E0F7FA; align-self: flex-end; }
   .bubble-minoru { background-color: #FCE4EC; align-self: flex-start; }
 
+  /* ローディングスケルトン */
+  .chat-bubble.loading {
+    background-color: #f0f0f0;
+    color: transparent;
+    position: relative;
+  }
+  .chat-bubble.loading::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(
+      90deg,
+      rgba(255,255,255,0) 0%,
+      rgba(255,255,255,0.6) 50%,
+      rgba(255,255,255,0) 100%
+    );
+    animation: shimmer 1.2s infinite;
+    border-radius: 18px;
+  }
+  @keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
   /* 入力エリア固定 */
   #input-area {
     position: fixed;
@@ -50,20 +74,20 @@ st.markdown("""
     box-shadow: 0 -2px 6px rgba(0,0,0,0.1);
     padding: 12px 20px;
   }
-  /* ラベルを必須にしても、ここで隠す */
+  /* ラベルは必須だが非表示 */
   #input-area label { display: none !important; }
-  #input-area input {
-    width: 80%;
-    height: 40px;
-    padding: 8px;
-    font-size: 16px;
+  #input-area textarea {
+    width: 80%; height: 50px;
+    resize: none;
     border-radius: 12px;
     border: 1px solid #ccc;
+    padding: 8px;
+    font-size: 16px;
   }
   #input-area button {
     width: 15%;
     margin-left: 5%;
-    height: 40px;
+    height: 50px;
     font-size: 16px;
     border: none;
     border-radius: 12px;
@@ -126,11 +150,11 @@ if "history" not in st.session_state:
 # ─── 入力フォーム＋送信処理 ─────────────────────────────────
 st.markdown('<div id="input-area">', unsafe_allow_html=True)
 with st.form("chat_form", clear_on_submit=True):
-    user_q = st.text_input(
-        label="質問",                  # 空ラベルNG→必須
+    user_q = st.text_area(
+        label="質問",
         placeholder="質問を入力…",
         key="input_q",
-        label_visibility="collapsed"  # 見た目上は非表示
+        height=50
     )
     send_btn = st.form_submit_button("送信")
 st.markdown('</div>', unsafe_allow_html=True)
@@ -140,14 +164,14 @@ if send_btn and user_q.strip():
     render_loading_skeleton()
     resp = fetch_response(user_q)
     st.session_state.history.append(("ai", resp))
-    st.session_state.input_q = ""
+    # clear_on_submit=True によって自動クリアされるので手動クリア不要
     st.rerun()
 
 # ─── チャット履歴表示エリア ─────────────────────────────────
 st.markdown('<div id="chat-container">', unsafe_allow_html=True)
-for role, txt in st.session_state.history:
+for role, text in st.session_state.history:
     if role == "user":
-        render_chat_bubble("しんや", txt)
+        render_chat_bubble("しんや", text)
     else:
-        render_chat_bubble("ゆかり", txt)
+        render_chat_bubble("ゆかり", text)
 st.markdown('</div>', unsafe_allow_html=True)
