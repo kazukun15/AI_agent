@@ -326,8 +326,11 @@ if st.button("道路でTSP最短巡回ルート計算"):
                 st.session_state["road_path"] = full_path
                 st.success(f"巡回ルート計算完了！総距離: {total:.2f} km（道路距離）")
 
-# ▼▼▼ 折りたたみ（expander）表示に変更！ ▼▼▼
-with st.expander("📋 避難所データ一覧・巡回順（クリックで開閉）", expanded=False):
-    st.dataframe(shelters_df)
-    if st.session_state.get("route") and all(i < len(shelters_df) for i in st.session_state["route"]):
-        st.write("巡回順（0起点）:", [shelters_df.iloc[i][st.session_state["label_col"]] for i in st.session_state["route"]])
+# --- 折りたたみデータ一覧 ---
+if not shelters_df.empty:
+    with st.expander("📋 避難所データ一覧・巡回順（クリックで開閉）"):
+        st.dataframe(shelters_df)
+        if st.session_state.get("route") and all(i < len(shelters_df) for i in st.session_state["route"]):
+            st.write("巡回順（0起点）:", [shelters_df.iloc[i][st.session_state["label_col"]] for i in st.session_state["route"]])
+else:
+    st.info("避難所データがありません。")
