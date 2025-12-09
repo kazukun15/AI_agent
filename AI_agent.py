@@ -1,345 +1,1202 @@
-import streamlit as st
-import pandas as pd
-import geopandas as gpd
-import numpy as np
-import pydeck as pdk
-import tempfile
 import os
-import osmnx as ox
-import networkx as nx
-from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+import io
+import re
+from typing import Dict, Any, Optional
 
-KAMIJIMA_CENTER = (34.25754417840102, 133.20446981161595)
-st.set_page_config(page_title="避難所TSP（GeoJSONスマホ対応）", layout="wide")
+import streamlit as st
+from PIL import Image
 
-st.markdown("""
+import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
+import docx
+
+# ======================================================
+# ページ設定
+# ======================================================
+st.set_page_config(
+    page_title="MAGI風マルチAI分析システム（テキスト簡易版＋SWOTオプション）",
+    page_icon="🧬",
+    layout="wide",
+)
+
+# ------------------------------------------------------
+# MAGI風 カスタムCSS（スマホ対応＋SWOT可視化）
+# ------------------------------------------------------
+st.markdown(
+    """
     <style>
-    @media (max-width: 800px) {
-        .block-container { padding-left: 0.4rem; padding-right: 0.4rem; }
-        .stButton button { font-size: 1.12em; padding: 0.7em 1.3em; }
+    .stApp {
+        background: radial-gradient(circle at top, #222b40 0, #050710 45%, #02030a 100%);
+        color: #e0e4ff;
+        font-family: "Roboto Mono", "SF Mono", "Consolas", "Noto Sans JP", monospace;
+    }
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #3e4a6e;
+        border-radius: 3px;
+    }
+    .magi-header {
+        border: 1px solid #4d5cff;
+        border-radius: 10px;
+        padding: 12px 18px;
+        margin-bottom: 16px;
+        background: linear-gradient(135deg, rgba(35,50,95,0.95), rgba(10,15,35,0.95));
+        box-shadow: 0 0 20px rgba(80,120,255,0.35);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .magi-header-left { display: flex; flex-direction: column; }
+    .magi-header-title {
+        font-size: 20px;
+        letter-spacing: 0.18em;
+        color: #e8ecff;
+        text-transform: uppercase;
+    }
+    .magi-header-sub {
+        font-size: 11px;
+        color: #9fa8ff;
+        margin-top: 4px;
+    }
+    .magi-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: #b6ffcc;
+    }
+    .magi-status-light {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: radial-gradient(circle, #9fffcb 0, #00ff66 40%, #008833 100%);
+        box-shadow: 0 0 8px #00ff99;
+        animation: magi-pulse 1.5s infinite ease-in-out;
+    }
+    @keyframes magi-pulse {
+        0% { transform: scale(1); opacity: 0.8; }
+        50% { transform: scale(1.3); opacity: 1; }
+        100% { transform: scale(1); opacity: 0.8; }
+    }
+    .magi-info-card {
+        border-radius: 10px;
+        border: 1px solid rgba(130,140,200,0.6);
+        background: linear-gradient(135deg, rgba(16,22,48,0.95), rgba(6,10,26,0.95));
+        padding: 10px 14px;
+        font-size: 13px;
+        color: #cfd6ff;
+        margin-bottom: 8px;
+    }
+    .magi-info-card b { color: #ffffff; }
+
+    .magi-panel {
+        border-radius: 10px;
+        padding: 10px 14px;
+        margin-top: 6px;
+        margin-bottom: 6px;
+        font-size: 13px;
+        line-height: 1.6;
+        border: 1px solid rgba(140,160,255,0.4);
+        background: radial-gradient(circle at top, rgba(18,26,60,0.98), rgba(5,8,22,0.98));
+        box-shadow: 0 0 15px rgba(90,110,200,0.35);
+        overflow-wrap: break-word;
+    }
+    .magi-panel-logic {
+        border-color: #497bff;
+        box-shadow: 0 0 16px rgba(74,123,255,0.4);
+    }
+    .magi-panel-human {
+        border-color: #ffb349;
+        box-shadow: 0 0 16px rgba(255,179,73,0.4);
+    }
+    .magi-panel-reality {
+        border-color: #3fd684;
+        box-shadow: 0 0 16px rgba(63,214,132,0.4);
+    }
+    .magi-panel-media {
+        border-color: #c36bff;
+        box-shadow: 0 0 16px rgba(195,107,255,0.4);
+    }
+    .magi-panel-summary {
+        margin-top: 4px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #e3e7ff;
+    }
+
+    .magi-vote {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 4px 8px;
+        border-radius: 6px;
+        margin-bottom: 4px;
+        font-size: 11px;
+    }
+    .magi-vote-label-en {
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        opacity: 0.9;
+    }
+    .magi-vote-label-jp {
+        font-size: 12px;
+        font-weight: 600;
+        margin-top: 2px;
+    }
+    .magi-vote-approve {
+        background: linear-gradient(135deg, #0b5428, #21b35a);
+        border: 1px solid #39ff9c;
+        box-shadow: 0 0 12px rgba(50,255,170,0.7);
+        color: #e8fff4;
+    }
+    .magi-vote-reject {
+        background: linear-gradient(135deg, #5b1111, #d63232);
+        border: 1px solid #ff7b7b;
+        box-shadow: 0 0 12px rgba(255,100,100,0.7);
+        color: #ffecec;
+    }
+    .magi-vote-hold {
+        background: linear-gradient(135deg, #6a5212, #d7a52b);
+        border: 1px solid #ffd966;
+        box-shadow: 0 0 12px rgba(255,220,120,0.7);
+        color: #fff8e1;
+    }
+
+    .magi-aggregator {
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-top: 10px;
+        border: 1px solid #6f8dff;
+        background: radial-gradient(circle at top, rgba(31,42,90,0.98), rgba(6,8,20,0.98));
+        box-shadow: 0 0 22px rgba(110,140,255,0.5);
+        font-size: 14px;
+        color: #ecf0ff;
+        line-height: 1.7;
+        overflow-wrap: break-word;
+    }
+
+    .magi-section-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: #e3e7ff;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-top: 16px;
+        margin-bottom: 6px;
+    }
+    .magi-divider {
+        height: 1px;
+        border: none;
+        background: linear-gradient(to right, #4b5cff, transparent);
+        margin-bottom: 10px;
+    }
+
+    /* SWOT 可視化用 */
+    .magi-panel-swot {
+        border-radius: 10px;
+        padding: 10px 14px;
+        margin-top: 6px;
+        margin-bottom: 6px;
+        font-size: 12px;
+        line-height: 1.6;
+        border: 1px solid rgba(255,127,209,0.7);
+        background: radial-gradient(circle at top, rgba(40,20,50,0.96), rgba(10,4,16,0.96));
+        box-shadow: 0 0 18px rgba(255,127,209,0.5);
+        overflow-wrap: break-word;
+    }
+    .swot-chip {
+        display: inline-block;
+        padding: 3px 8px;
+        margin: 2px;
+        border-radius: 999px;
+        font-size: 11px;
+        line-height: 1.4;
+        white-space: normal;
+        word-break: break-word;
+    }
+    .swot-chip-s {
+        background: rgba(76, 175, 80, 0.18);
+        border: 1px solid rgba(129, 199, 132, 0.9);
+        color: #dcedc8;
+    }
+    .swot-chip-w {
+        background: rgba(244, 67, 54, 0.18);
+        border: 1px solid rgba(229, 115, 115, 0.9);
+        color: #ffcdd2;
+    }
+    .swot-chip-o {
+        background: rgba(33, 150, 243, 0.18);
+        border: 1px solid rgba(144, 202, 249, 0.9);
+        color: #bbdefb;
+    }
+    .swot-chip-t {
+        background: rgba(255, 193, 7, 0.18);
+        border: 1px solid rgba(255, 224, 130, 0.9);
+        color: #ffecb3;
+    }
+    .swot-count-label {
+        font-size: 11px;
+        opacity: 0.8;
+        margin-bottom: 4px;
+    }
+
+    @media (max-width: 768px) {
+        .magi-header {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 8px;
+        }
+        .magi-header-title {
+            font-size: 16px;
+        }
+        .magi-panel {
+            font-size: 12px;
+            padding: 8px 10px;
+        }
+        .magi-aggregator {
+            font-size: 13px;
+            padding: 12px 14px;
+        }
     }
     </style>
-""", unsafe_allow_html=True)
-st.title("🏫 避難所TSPルートアプリ（GeoJSON対応・スマホ/PC両対応）")
-
-def guess_name_col(df):
-    for cand in ["name", "NAME", "名称", "避難所", "施設名", "address", "住所"]:
-        if cand in df.columns:
-            return cand
-    obj_cols = [c for c in df.columns if df[c].dtype == 'O']
-    if obj_cols:
-        return obj_cols[0]
-    return df.columns[0] if not df.empty else "name"
-
-def file_to_df(uploaded_files):
-    try:
-        if any(f.name.endswith(".shp") for f in uploaded_files):
-            with tempfile.TemporaryDirectory() as temp_dir:
-                for file in uploaded_files:
-                    with open(os.path.join(temp_dir, file.name), "wb") as out:
-                        out.write(file.getvalue())
-                shp_path = [os.path.join(temp_dir, f.name) for f in uploaded_files if f.name.endswith(".shp")][0]
-                gdf = gpd.read_file(shp_path)
-        elif any(f.name.endswith((".geojson",".json")) for f in uploaded_files):
-            geojson_file = [f for f in uploaded_files if f.name.endswith((".geojson",".json"))][0]
-            gdf = gpd.read_file(geojson_file)
-        elif any(f.name.endswith(".csv") for f in uploaded_files):
-            csv_file = [f for f in uploaded_files if f.name.endswith(".csv")][0]
-            df = pd.read_csv(csv_file)
-            if not set(["lat","lon"]).issubset(df.columns):
-                st.warning("lat, lon 列が必要です")
-                return pd.DataFrame(columns=["lat", "lon", "name"])
-            for c in ["lat", "lon"]:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-            return df
-        else:
-            st.warning("SHP/GeoJSON/CSVのみ対応です")
-            return pd.DataFrame(columns=["lat", "lon", "name"])
-
-        # EPSG自動変換
-        if gdf.crs is None:
-            gdf.set_crs(epsg=4326, inplace=True)
-        elif gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs(epsg=4326)
-
-        # 空データ・ジオメトリ不在対応
-        if "geometry" not in gdf.columns or gdf.empty:
-            st.warning("ジオメトリ情報がありません")
-            return pd.DataFrame(columns=["lat", "lon", "name"])
-        if not (gdf.geometry.type == "Point").any():
-            st.warning("Point型ジオメトリのみ対応です")
-            return pd.DataFrame(columns=["lat", "lon", "name"])
-        gdf = gdf[gdf.geometry.type == "Point"]
-
-        gdf["lon"] = gdf.geometry.x
-        gdf["lat"] = gdf.geometry.y
-        if "name" not in gdf.columns:
-            gdf["name"] = gdf.index.astype(str)
-        gdf["lat"] = pd.to_numeric(gdf["lat"], errors="coerce")
-        gdf["lon"] = pd.to_numeric(gdf["lon"], errors="coerce")
-        gdf = gdf.dropna(subset=["lat", "lon"])
-        return gdf.reset_index(drop=True)
-    except Exception as e:
-        st.error(f"ファイル読み込みエラー: {e}")
-        return pd.DataFrame(columns=["lat", "lon", "name"])
-
-def create_road_distance_matrix(locs, mode="drive"):
-    try:
-        locs = [(float(lat), float(lon)) for lat, lon in locs]
-        lats = [p[0] for p in locs]
-        lons = [p[1] for p in locs]
-        north, south, east, west = max(lats)+0.01, min(lats)-0.01, max(lons)+0.01, min(lons)-0.01
-        G = ox.graph_from_bbox(north, south, east, west, network_type=mode)
-        node_ids = [ox.nearest_nodes(G, float(lon), float(lat)) for lat, lon in locs]
-        n = len(locs)
-        mat = np.zeros((n, n))
-        for i in range(n):
-            for j in range(n):
-                if i == j:
-                    mat[i, j] = 0
-                else:
-                    try:
-                        mat[i, j] = nx.shortest_path_length(G, node_ids[i], node_ids[j], weight='length') / 1000
-                    except (nx.NetworkXNoPath, nx.NodeNotFound):
-                        mat[i, j] = float('inf')
-        return mat, G, node_ids
-    except Exception as e:
-        st.error(f"道路ネットワーク構築エラー: {e}")
-        return np.zeros((len(locs),len(locs))), None, []
-
-def solve_tsp(distance_matrix):
-    size = len(distance_matrix)
-    manager = pywrapcp.RoutingIndexManager(size, 1, 0)
-    routing = pywrapcp.RoutingModel(manager)
-    def distance_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
-        return int(distance_matrix[from_node][to_node]*100000)
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    search_parameters.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
-    solution = routing.SolveWithParameters(search_parameters)
-    route = []
-    if solution:
-        idx = routing.Start(0)
-        while not routing.IsEnd(idx):
-            route.append(manager.IndexToNode(idx))
-            idx = solution.Value(routing.NextVar(idx))
-        route.append(route[0])
-    return route
-
-if "shelters" not in st.session_state:
-    st.session_state["shelters"] = pd.DataFrame([
-        {"lat": KAMIJIMA_CENTER[0], "lon": KAMIJIMA_CENTER[1], "name": "上島町役場"}
-    ])
-if "selected" not in st.session_state:
-    st.session_state["selected"] = []
-if "route" not in st.session_state:
-    st.session_state["route"] = []
-if "road_path" not in st.session_state:
-    st.session_state["road_path"] = []
-if "label_col" not in st.session_state:
-    st.session_state["label_col"] = "name"
-if "map_style" not in st.session_state:
-    st.session_state["map_style"] = "light"
-if "ox_mode" not in st.session_state:
-    st.session_state["ox_mode"] = "drive"
-
-st.sidebar.header("避難所データ追加 (SHP/GeoJSON/CSV)")
-st.sidebar.info(
-    "スマホ利用時は『ファイルアプリ（Googleドライブ等）→ダウンロードして選択』推奨です。\n"
-    "SHPは全ファイル一括（shp, shx, dbf, prj等）、GeoJSON, CSVもOK。"
-)
-uploaded_files = st.sidebar.file_uploader(
-    "全ファイル一括選択可（SHP一式, GeoJSON, CSV混在OK）",
-    type=["shp", "shx", "dbf", "prj", "cpg", "geojson", "json", "csv"],
-    accept_multiple_files=True
-)
-if uploaded_files:
-    gdf = file_to_df(uploaded_files)
-    if not gdf.empty:
-        gdf = gdf[[c for c in gdf.columns if c in ["lat", "lon"] or gdf[c].dtype == 'O']].copy()
-        st.session_state["shelters"] = pd.concat([st.session_state["shelters"], gdf], ignore_index=True)
-        st.success(f"{len(gdf)}件の避難所を追加しました")
-        st.session_state["label_col"] = guess_name_col(st.session_state["shelters"])
-
-with st.sidebar.form(key="manual_add"):
-    st.write("避難所を手動で追加")
-    lat = st.number_input("緯度", value=KAMIJIMA_CENTER[0], format="%f")
-    lon = st.number_input("経度", value=KAMIJIMA_CENTER[1], format="%f")
-    name = st.text_input("避難所名", "新しい避難所")
-    add_btn = st.form_submit_button("追加")
-    if add_btn:
-        st.session_state["shelters"] = pd.concat([
-            st.session_state["shelters"],
-            pd.DataFrame([{"lat": lat, "lon": lon, "name": str(name)}])
-        ], ignore_index=True)
-
-if st.sidebar.button("すべて削除"):
-    st.session_state["shelters"] = pd.DataFrame([
-        {"lat": KAMIJIMA_CENTER[0], "lon": KAMIJIMA_CENTER[1], "name": "上島町役場"}
-    ])
-    st.session_state["selected"] = []
-    st.session_state["route"] = []
-    st.session_state["road_path"] = []
-    st.session_state["label_col"] = "name"
-
-csv_export = st.session_state["shelters"].to_csv(index=False)
-st.sidebar.download_button("避難所CSVをダウンロード", csv_export, file_name="shelters.csv", mime="text/csv")
-
-# --- サイドバー：道路種別・TSPルート計算 ---
-with st.sidebar:
-    st.markdown("---")
-    st.header("TSPルート計算")
-    mode_disp = st.selectbox("道路種別", ["車（drive推奨）", "徒歩（歩道のみ）"], index=0, key="sb_mode")
-    st.session_state["ox_mode"] = "drive" if "車" in mode_disp else "walk"
-    tsp_btn = st.button("道路でTSP最短巡回ルート計算", key="sb_tsp_btn")
-
-# メインUI
-shelters_df = st.session_state["shelters"].copy()
-shelters_df["lat"] = pd.to_numeric(shelters_df["lat"], errors="coerce")
-shelters_df["lon"] = pd.to_numeric(shelters_df["lon"], errors="coerce")
-label_candidates = [c for c in shelters_df.columns if shelters_df[c].dtype == "O"]
-if len(label_candidates) == 0:
-    label_candidates = ["name"]
-st.session_state["label_col"] = st.selectbox(
-    "地図ラベルに使う列を選んでください（おすすめ：名称）",
-    label_candidates,
-    index=label_candidates.index(st.session_state["label_col"]) if st.session_state["label_col"] in label_candidates else 0
+    """,
+    unsafe_allow_html=True,
 )
 
-map_style_dict = {
-    "light": "light",
-    "dark": "dark",
-    "ストリート": "mapbox://styles/mapbox/streets-v12",
-    "衛星写真": "mapbox://styles/mapbox/satellite-streets-v12",
-    "アウトドア": "mapbox://styles/mapbox/outdoors-v12",
-    "ナビ風": "mapbox://styles/mapbox/navigation-night-v1"
-}
-style_name = st.selectbox(
-    "地図背景スタイル",
-    list(map_style_dict.keys()),
-    index=list(map_style_dict.keys()).index(st.session_state.get("map_style", "light"))
+# MAGI ヘッダー
+st.markdown(
+    """
+    <div class="magi-header">
+        <div class="magi-header-left">
+            <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
+            <div class="magi-header-sub">
+                GEMINI MULTI-MODEL · TEXT-ONLY LIGHTWEIGHT ANALYSIS
+            </div>
+        </div>
+        <div class="magi-status">
+            <div class="magi-status-light"></div>
+            <span>SYSTEM STATUS: ONLINE</span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
-st.session_state["map_style"] = style_name
 
-shelters_df = shelters_df.dropna(subset=["lat", "lon"]).reset_index(drop=True)
-
-# --- 巡回施設選択（expander内・チェックボックス） ---
-st.markdown("## 📋 巡回施設の選択")
-if not shelters_df.empty:
-    with st.expander("📋 巡回施設リスト（クリックで開閉・チェック選択）", expanded=False):
-        check_col = st.columns([1])
-        check_col[0].subheader("避難所リスト")
-        selected_flags = []
-        default_selected = set(st.session_state["selected"])
-        with check_col[0].form("facility_selector"):
-            selected_flags = []
-            for idx, row in shelters_df.iterrows():
-                checked = st.checkbox(
-                    f"{row[st.session_state['label_col']]} ({row['lat']:.5f},{row['lon']:.5f})",
-                    value=(idx in default_selected),
-                    key=f"cb_{idx}"
-                )
-                selected_flags.append(checked)
-            submitted = check_col[0].form_submit_button("選択確定")
-            if submitted:
-                st.session_state["selected"] = [i for i, flag in enumerate(selected_flags) if flag]
-else:
-    st.info("避難所データをまずアップロード・追加してください。")
-
-# --- TSPボタンが押されたら処理 ---
-if tsp_btn:
-    selected = st.session_state["selected"]
-    if not selected or len(selected) < 2:
-        st.warning("最低2か所以上の避難所を選択してください。")
-        st.session_state["road_path"] = []
-    else:
-        df = shelters_df.iloc[selected].reset_index(drop=True)
-        locs = list(zip(df["lat"], df["lon"]))
-        with st.spinner("OSM道路情報を取得＆巡回ルートを計算中...（通信状況により数秒かかります）"):
-            distmat, G, node_ids = create_road_distance_matrix(locs, mode=st.session_state["ox_mode"])
-            if np.any(np.isinf(distmat)):
-                st.error("一部の避難所間で道路がつながっていません。別の組合せで試してください。")
-                st.session_state["road_path"] = []
-            else:
-                route = solve_tsp(distmat)
-                st.session_state["route"] = [selected[i] for i in route]
-                total = sum([distmat[route[i], route[i+1]] for i in range(len(route)-1)])
-                # 実際の経路ラインも取得
-                full_path = []
-                for i in range(len(route)-1):
-                    try:
-                        seg = nx.shortest_path(G, node_ids[route[i]], node_ids[route[i+1]], weight='length')
-                        seg_coords = [[G.nodes[n]["x"], G.nodes[n]["y"]] for n in seg]
-                        if i != 0:
-                            seg_coords = seg_coords[1:]
-                        full_path.extend(seg_coords)
-                    except Exception as e:
-                        st.error(f"経路描画エラー: {e}")
-                        continue
-                st.session_state["road_path"] = full_path
-                st.success(f"巡回ルート計算完了！総距離: {total:.2f} km（道路距離）")
-
-# --- 地図（必ず最新状態で描画） ---
-st.markdown("## 🗺️ 地図（全避難所ラベル付き・TSP道路ルート表示）")
-layer_pts = pdk.Layer(
-    "ScatterplotLayer",
-    data=shelters_df,
-    get_position='[lon, lat]',
-    get_color='[0, 150, 255, 200]',
-    get_radius=40,
-    radius_min_pixels=1,
-    radius_max_pixels=6,
-    pickable=True,
+st.markdown(
+    """
+    <div class="magi-info-card">
+    <b>概要：</b> テキスト・画像・音声などを入力すると、<b>Magi-Logic / Magi-Human / Magi-Reality / Magi-Media</b> が
+    それぞれ短いコメントと判定を出し、最後に統合MAGIが結論をまとめます。<br>
+    出力はプレーンテキスト形式のみとし、JSON解析を行わないことで安定性を優先した簡易版です。<br>
+    さらにオプションで SWOT 分析（強み・弱み・機会・脅威）も実行できます。
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
-layer_text = pdk.Layer(
-    "TextLayer",
-    data=shelters_df,
-    get_position='[lon, lat]',
-    get_text=st.session_state["label_col"],
-    get_size=15,
-    get_color=[20, 20, 40, 180],
-    get_angle=0,
-    get_alignment_baseline="'bottom'",
-    pickable=False,
-)
-layers = [layer_pts, layer_text]
-road_path = st.session_state.get("road_path", [])
-if road_path and len(road_path) > 1:
-    layer_line = pdk.Layer(
-        "PathLayer",
-        data=pd.DataFrame({"path": [road_path]}),
-        get_path="path",
-        get_color=[255, 60, 60, 200],
-        width_scale=10,
-        width_min_pixels=4,
-        width_max_pixels=10,
-        pickable=False,
+
+# ======================================================
+# Gemini API 初期化
+# ======================================================
+api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+
+if not api_key:
+    st.error(
+        "Gemini の API キーが設定されていません。\n\n"
+        "【Streamlit Cloud】Settings → Secrets で：\n"
+        'GEMINI_API_KEY = "あなたのGemini APIキー"\n\n'
+        "【ローカル】.streamlit/secrets.toml または環境変数 GEMINI_API_KEY に設定してください。"
     )
-    layers.append(layer_line)
+    st.stop()
 
-view = pdk.ViewState(
-    latitude=KAMIJIMA_CENTER[0],
-    longitude=KAMIJIMA_CENTER[1],
-    zoom=13.3,
-    pitch=45,
-    bearing=0,
+genai.configure(api_key=api_key)
+
+# ======================================================
+# モデル選択（デフォルトは gemini-2.0-flash）
+# ======================================================
+MODEL_CHOICES = {
+    "Gemini 2.0 Flash（デフォルト）": "gemini-2.0-flash",
+    "Gemini 2.5 Flash": "gemini-2.5-flash",
+    "Gemini 2.5 Pro": "gemini-2.5-pro",
+    "Gemini 2.5 Flash Lite": "gemini-2.5-flash-lite",
+}
+
+if "gemini_model_name" not in st.session_state:
+    st.session_state["gemini_model_name"] = "gemini-2.0-flash"
+
+st.sidebar.markdown("### モデル選択")
+labels = list(MODEL_CHOICES.keys())
+current_model = st.session_state.get("gemini_model_name", "gemini-2.0-flash")
+current_label = next(
+    (lbl for lbl, mid in MODEL_CHOICES.items() if mid == current_model),
+    "Gemini 2.0 Flash（デフォルト）",
 )
-st.pydeck_chart(pdk.Deck(
-    map_style=map_style_dict[st.session_state["map_style"]],
-    layers=layers,
-    initial_view_state=view,
-    tooltip={"text": f"{{{st.session_state['label_col']}}}"}
-), use_container_width=True)
+default_index = labels.index(current_label) if current_label in labels else 0
 
-# --- データ一覧もexpanderで表示 ---
-if not shelters_df.empty:
-    with st.expander("📋 避難所データ一覧・巡回順（クリックで開閉）"):
-        st.dataframe(shelters_df)
-        if st.session_state.get("route") and all(i < len(shelters_df) for i in st.session_state["route"]):
-            st.write("巡回順（0起点）:", [shelters_df.iloc[i][st.session_state["label_col"]] for i in st.session_state["route"]])
+selected_label = st.sidebar.selectbox(
+    "使用するGeminiモデル",
+    labels,
+    index=default_index,
+    help=(
+        "デフォルトは gemini-2.0-flash です。\n"
+        "他のモデルも、まったく同じ聞き方（同じプロンプト構成）で呼び出します。"
+    ),
+)
+st.session_state["gemini_model_name"] = MODEL_CHOICES[selected_label]
+
+
+def get_gemini_model():
+    """
+    どのモデルに対しても「同じ聞き方」を維持するため、
+    呼び出し方は変えず、内部でモデル名だけを切り替える。
+    """
+    model_name = st.session_state.get("gemini_model_name", "gemini-2.0-flash")
+    return genai.GenerativeModel(model_name)
+
+
+# ======================================================
+# ユーティリティ
+# ======================================================
+def clean_text_for_display(text: str) -> str:
+    if not text:
+        return ""
+    return text.replace("*", "・")
+
+
+def trim_text(s: str, max_chars: int = 600) -> str:
+    if not s:
+        return ""
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars] + "\n…（長文のためここで省略）"
+
+
+def classify_resource_exhausted(e: ResourceExhausted) -> str:
+    """
+    ResourceExhausted のメッセージから、
+    - レートリミット（短時間の叩きすぎ）
+    - 日次／総量クォータ
+    - free tier が 0
+    - その他
+    を日本語で推定。
+    """
+    msg = str(e)
+    low = msg.lower()
+
+    if "limit: 0" in msg:
+        return (
+            "カテゴリ推定：free tier クォータが 0\n"
+            "・このプロジェクトの free_tier が 0 に設定されているか、既に使い切っています。\n"
+            "・AI Studio / Cloud Console の Quotas 画面で、対象モデルの free_tier が 0 かどうか確認してください。\n"
+            "・継続利用する場合は、課金の有効化または別プロジェクト／別APIキーの利用を検討してください。"
+        )
+
+    is_per_minute = ("PerMinute" in msg) or ("per minute" in low)
+    is_per_day = ("PerDay" in msg) or ("per day" in low)
+
+    if "rate limit" in low or "too many requests" in low or (is_per_minute and not is_per_day):
+        return (
+            "カテゴリ推定：レートリミット（短時間の叩きすぎ）\n"
+            "・短時間に大量のリクエストを送信している可能性があります。\n"
+            "・ボタンの連打を避け、実行間隔をあけてください。\n"
+            "・1回の実行での呼び出し回数や入力サイズを減らすことも有効です。"
+        )
+
+    if is_per_day:
+        return (
+            "カテゴリ推定：日次／総量クォータ上限\n"
+            "・1日あたり、またはプロジェクト全体の利用上限（無料枠・課金枠）に達している可能性があります。\n"
+            "・AI Studio / Cloud Console の Usage / Quota 画面で、対象モデルの PerDay / PerProject の値を確認してください。"
+        )
+
+    if "exhausted" in low or "resources exhausted" in low:
+        return (
+            "カテゴリ推定：リソース逼迫（モデル側の一時的混雑など）\n"
+            "・アクセス集中などで一時的にリソースが不足している可能性があります。\n"
+            "・しばらく待ってから再実行してみてください。"
+        )
+
+    return (
+        "カテゴリ推定：その他の ResourceExhausted\n"
+        "・詳細は下記の『生メッセージ』を参照してください。"
+    )
+
+
+# ======================================================
+# 媒体のテキスト化（画像・音声）
+# ======================================================
+def describe_image_with_gemini(img: Image.Image) -> str:
+    model = get_gemini_model()
+    prompt = (
+        "この画像に何が写っているか、日本語で簡潔に2〜3文で説明してください。\n"
+        "心理的な印象も1文で添えてください。"
+    )
+    try:
+        resp = model.generate_content([prompt, img])
+        return clean_text_for_display((resp.text or "").strip())
+    except ResourceExhausted as e:
+        detail = classify_resource_exhausted(e)
+        return (
+            "【エラー】画像解析中に Gemini のリソース上限エラーが発生しました。\n"
+            f"生メッセージ：{str(e)}\n\n{detail}"
+        )
+    except Exception as e:
+        return f"【エラー】画像解析に失敗しました: {str(e)}"
+
+
+def transcribe_audio_with_gemini(uploaded_file) -> str:
+    model = get_gemini_model()
+    audio_bytes = uploaded_file.getvalue()
+    mime_type = uploaded_file.type or "audio/wav"
+
+    prompt = (
+        "この音声の内容を日本語でできるだけ正確に文字起こししてください。\n"
+        "出力は通常の日本語文のみで書いてください。"
+    )
+    try:
+        resp = model.generate_content(
+            [prompt, {"mime_type": mime_type, "data": audio_bytes}]
+        )
+        return clean_text_for_display((resp.text or "").strip())
+    except ResourceExhausted as e:
+        detail = classify_resource_exhausted(e)
+        return (
+            "【エラー】音声解析中に Gemini のリソース上限エラーが発生しました。\n"
+            f"生メッセージ：{str(e)}\n\n{detail}"
+        )
+    except Exception as e:
+        return f"【エラー】音声解析に失敗しました: {str(e)}"
+
+
+# ======================================================
+# MAGI テキスト生成（SWOT ON/OFF・リミット診断付き）
+# ======================================================
+def call_magi_plain(context: Dict[str, Any], enable_swot: bool) -> str | None:
+    """
+    1回の generate_content で、Magi-Logic/Human/Reality/Media と統合出力を返す。
+    enable_swot=True のときだけ SWOT 分析指示を追加し、
+    リソース上限や MAX_TOKENS などを詳細にエラーハンドリング。
+    """
+    model = get_gemini_model()
+
+    trimmed_context = {
+        "user_question": trim_text(context.get("user_question", "")),
+        "text_input": trim_text(context.get("text_input", "")),
+        "audio_transcript": trim_text(context.get("audio_transcript", "")),
+        "image_description": trim_text(context.get("image_description", "")),
+    }
+
+    # --- SWOTあり版プロンプト ---
+    sys_prompt_swot = """
+あなたは NERV の MAGI システム全体を模した統合AIです。
+Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGIとしての結論、
+さらに意思決定に役立つSWOT分析を、以下のフォーマットだけを使って日本語で出力してください。
+
+[重要：出力フォーマット（この通りに出力すること）]
+
+【Magi-Logic】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Human】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Reality】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Media】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【MAGI-統合サマリー】
+全体としての結論を150文字以内でまとめる
+
+【MAGI-統合詳細】
+統合的な視点から、2〜4段落・合計500文字以内で詳細なコメントと推奨アクションを書く
+
+【SWOT分析】
+Strengths: 強みを5〜7個、日本語で列挙し、読点「、」で区切って1行で書く（合計300文字以内）
+Weaknesses: 弱みを5〜7個、日本語で列挙し、読点「、」で区切って1行で書く（合計300文字以内）
+Opportunities: 機会を5〜7個、日本語で列挙し、読点「、」で区切って1行で書く（合計300文字以内）
+Threats: 脅威を5〜7個、日本語で列挙し、読点「、」で区切って1行で書く（合計300文字以内）
+
+[制約]
+- 箇条書き（・や番号付きリスト）は使わない。
+- 上記の見出し・ラベル以外の文言や飾りは追加しない。
+- 「Strengths:」「Weaknesses:」「Opportunities:」「Threats:」は英語ラベルをそのまま使う。
+- 暴力・自傷・違法行為などの過激な表現は避け、穏当で一般的な表現に言い換える。
+- 出力は必ずこのフォーマットに沿ったプレーンテキストのみとする。
+"""
+
+    # --- SWOTなし（軽量版）プロンプト ---
+    sys_prompt_basic = """
+あなたは NERV の MAGI システム全体を模した統合AIです。
+Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGIとしての結論を、
+以下のフォーマットだけを使って日本語で出力してください。
+
+[重要：出力フォーマット（この通りに出力すること）]
+
+【Magi-Logic】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Human】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Reality】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Media】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【MAGI-統合サマリー】
+全体としての結論を150文字以内でまとめる
+
+【MAGI-統合詳細】
+統合的な視点から、2〜3段落・合計400文字以内で詳細なコメントと推奨アクションを書く
+
+[制約]
+- 箇条書き（・や番号付きリスト）は使わない。
+- 上記の見出し・ラベル以外の文言や飾りは追加しない。
+- 出力は必ずこのフォーマットに沿ったプレーンテキストのみとする。
+"""
+
+    ctx_text = (
+        "【ユーザーからの情報】\n"
+        + f"質問: {trimmed_context['user_question']}\n"
+        + (
+            f"テキスト入力: {trimmed_context['text_input']}\n"
+            if trimmed_context["text_input"]
+            else ""
+        )
+        + (
+            f"音声文字起こし: {trimmed_context['audio_transcript']}\n"
+            if trimmed_context["audio_transcript"]
+            else ""
+        )
+        + (
+            f"画像説明: {trimmed_context['image_description']}\n"
+            if trimmed_context["image_description"]
+            else ""
+        )
+    )
+
+    def _call_internal(use_swot: bool, attempt: int) -> str | None:
+        sys_prompt = sys_prompt_swot if use_swot else sys_prompt_basic
+        max_tokens = 640 if use_swot else 480
+
+        try:
+            resp = model.generate_content(
+                [sys_prompt, ctx_text],
+                generation_config={"max_output_tokens": max_tokens},
+            )
+
+            if not getattr(resp, "candidates", None):
+                if attempt == 1 and use_swot:
+                    # SWOTありで失敗した場合は、1回だけSWOTなし軽量モードで再試行
+                    return _call_internal(False, 2)
+                return None
+
+            first = resp.candidates[0]
+            content = getattr(first, "content", None)
+            parts = getattr(content, "parts", None)
+
+            if not content or not parts:
+                # finish_reason から原因を推定
+                reason = getattr(first, "finish_reason", None)
+                reason_str = str(reason).upper() if reason is not None else ""
+
+                if attempt == 1 and use_swot:
+                    # まずはSWOTなしに落として再チャレンジ
+                    return _call_internal(False, 2)
+
+                if "SAFETY" in reason_str:
+                    return (
+                        "【エラー】Gemini の安全ポリシーにより回答がブロックされました。\n"
+                        "・特定の個人攻撃、自傷行為、違法行為などに関する内容が含まれていないか確認してください。\n"
+                        "・表現をもっと一般的で穏やかなものに言い換えて再実行してみてください。"
+                    )
+                if "MAX_TOKENS" in reason_str or "TOKENS" in reason_str:
+                    return (
+                        "【エラー】Gemini の出力トークン上限に達し、回答を最後まで生成できませんでした。\n"
+                        "・質問や補足テキストをさらに短くしてください。\n"
+                        "・必要なポイントだけに絞って問い直してみてください。"
+                    )
+
+                return (
+                    "【エラー】Gemini が有効なテキストを返しませんでした。\n"
+                    "・入力内容が長すぎるか、安全ポリシーに抵触した可能性があります。\n"
+                    "・質問を短くし、刺激的な表現を避けて再実行してみてください。"
+                )
+
+            text = (getattr(resp, "text", "") or "").strip()
+            if not text:
+                if attempt == 1 and use_swot:
+                    # 空テキスト → SWOTなしで再試行
+                    return _call_internal(False, 2)
+                return (
+                    "【エラー】Gemini が統合MAGIのテキストを返しませんでした。\n"
+                    "内容が長すぎるか、一部が安全フィルタにかかった可能性があります。"
+                )
+
+            return text
+
+        except ResourceExhausted as e:
+            if attempt == 1 and use_swot:
+                # まずはSWOTなしで軽く投げ直し
+                return _call_internal(False, 2)
+
+            detail = classify_resource_exhausted(e)
+            return (
+                "【エラー】Gemini で ResourceExhausted が発生しました。\n\n"
+                f"生メッセージ：{str(e)}\n\n"
+                f"{detail}"
+            )
+        except GoogleAPIError as e:
+            return f"【エラー】Gemini API で問題が発生しました: {str(e)}"
+        except Exception as e:
+            return f"【エラー】MAGI複合分析中に想定外のエラーが発生しました: {str(e)}"
+
+    return _call_internal(enable_swot, 1)
+
+
+# ======================================================
+# テキスト → 擬似エージェント構造＋SWOTへのパース
+# ======================================================
+def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str], Dict[str, str]]:
+    agents: Dict[str, Any] = {}
+    aggregated: Dict[str, str] = {"summary": "", "details": ""}
+    swot: Dict[str, str] = {
+        "strengths": "",
+        "weaknesses": "",
+        "opportunities": "",
+        "threats": "",
+    }
+
+    pattern = r"^【(Magi-Logic|Magi-Human|Magi-Reality|Magi-Media|MAGI-統合サマリー|MAGI-統合詳細|SWOT分析)】"
+    parts = re.split(pattern, text, flags=re.MULTILINE)
+
+    it = iter(parts[1:])  # 最初の要素は前置き
+
+    for name, body in zip(it, it):
+        body = body.strip()
+        if name == "Magi-Logic":
+            agents["logic"] = parse_agent_block("Magi-Logic（論理・構造担当）", body)
+        elif name == "Magi-Human":
+            agents["human"] = parse_agent_block("Magi-Human（感情・人間面担当）", body)
+        elif name == "Magi-Reality":
+            agents["reality"] = parse_agent_block("Magi-Reality（現実運用・リスク担当）", body)
+        elif name == "Magi-Media":
+            agents["media"] = parse_agent_block("Magi-Media（表現・印象担当）", body)
+        elif name == "MAGI-統合サマリー":
+            aggregated["summary"] = body.replace("\n", " ").strip()
+        elif name == "MAGI-統合詳細":
+            aggregated["details"] = body.strip()
+        elif name == "SWOT分析":
+            swot = parse_swot_block(body)
+
+    return agents, aggregated, swot
+
+
+def parse_agent_block(name_jp: str, body: str) -> Dict[str, Any]:
+    lines = [l.strip() for l in body.splitlines() if l.strip()]
+    decision_jp = "保留"
+    summary = ""
+
+    for line in lines:
+        if line.startswith("判定"):
+            if "可決" in line:
+                decision_jp = "可決"
+            elif "否決" in line:
+                decision_jp = "否決"
+            elif "保留" in line:
+                decision_jp = "保留"
+        elif line.startswith("要約"):
+            summary = line.replace("要約", "").replace(":", "").replace("：", "").strip()
+        else:
+            if summary:
+                summary += " " + line
+
+    decision_code = {
+        "可決": "Go",
+        "否決": "No-Go",
+        "保留": "Hold",
+    }.get(decision_jp, "Hold")
+
+    return {
+        "name_jp": name_jp,
+        "summary": summary,
+        "decision_jp": decision_jp,
+        "decision_code": decision_code,
+    }
+
+
+def parse_swot_block(body: str) -> Dict[str, str]:
+    swot = {
+        "strengths": "",
+        "weaknesses": "",
+        "opportunities": "",
+        "threats": "",
+    }
+    lines = [l.strip() for l in body.splitlines() if l.strip()]
+    for line in lines:
+        if line.startswith("Strengths"):
+            swot["strengths"] = line.split(":", 1)[-1].strip()
+        elif line.startswith("Weaknesses"):
+            swot["weaknesses"] = line.split(":", 1)[-1].strip()
+        elif line.startswith("Opportunities"):
+            swot["opportunities"] = line.split(":", 1)[-1].strip()
+        elif line.startswith("Threats"):
+            swot["threats"] = line.split(":", 1)[-1].strip()
+    return swot
+
+
+def decision_to_css(decision_code: str) -> Dict[str, str]:
+    code = (decision_code or "Hold").strip()
+    if code == "Go":
+        return {"css": "approve", "en": "APPROVE", "jp": "可決"}
+    if code == "No-Go":
+        return {"css": "reject", "en": "REJECT", "jp": "否決"}
+    return {"css": "hold", "en": "HOLD", "jp": "保留"}
+
+
+def swot_text_to_chips(text: str, chip_class: str) -> str:
+    if not text:
+        return ""
+    items = [x.strip() for x in text.replace("。", "、").split("、") if x.strip()]
+    html_items = "".join(
+        f'<span class="swot-chip {chip_class}">{clean_text_for_display(item)}</span>'
+        for item in items
+    )
+    count_label = f'<div class="swot-count-label">項目数: {len(items)}</div>'
+    return count_label + html_items
+
+
+# ======================================================
+# Word レポート生成（SWOT ON のときだけ第4章を追加）
+# ======================================================
+def build_word_report(
+    context: Dict[str, Any],
+    agents: Dict[str, Any],
+    aggregated: Dict[str, Any],
+    magi_raw_text: str,
+    image: Optional[Image.Image] = None,
+    swot: Optional[Dict[str, str]] = None,
+    enable_swot: bool = False,
+) -> bytes:
+    doc = docx.Document()
+    title = "MAGI風マルチAI分析レポート（テキスト簡易版"
+    if enable_swot:
+        title += "＋SWOT"
+    title += "）"
+    doc.add_heading(title, level=1)
+
+    # 第1章 入力情報
+    doc.add_heading("第1章 入力情報", level=2)
+    doc.add_paragraph(f"■ ユーザー質問：{context.get('user_question', '')}")
+    if context.get("text_input"):
+        doc.add_paragraph("■ テキスト入力：")
+        doc.add_paragraph(context["text_input"])
+    if context.get("audio_transcript"):
+        doc.add_paragraph("■ 音声文字起こし：")
+        doc.add_paragraph(context["audio_transcript"])
+    if context.get("image_description"):
+        doc.add_paragraph("■ 画像の説明：")
+        doc.add_paragraph(context["image_description"])
+
+    if image is not None:
+        img_stream = io.BytesIO()
+        image.save(img_stream, format="PNG")
+        img_stream.seek(0)
+        doc.add_picture(img_stream, width=docx.shared.Inches(3))
+
+    # 第2章 各MAGIエージェントの要約
+    doc.add_heading("第2章 各MAGIエージェントの要約と判定", level=2)
+    if agents:
+        for key in ["logic", "human", "reality", "media"]:
+            if key not in agents:
+                continue
+            a = agents[key]
+            name = a.get("name_jp", key)
+            doc.add_heading(name, level=3)
+            doc.add_paragraph(f"判定：{a.get('decision_jp', '')}")
+            doc.add_paragraph(f"要約：{clean_text_for_display(a.get('summary', ''))}")
+    else:
+        doc.add_paragraph("今回の実行では、MAGIエージェントの詳細出力は取得できませんでした。")
+
+    # 第3章 MAGI統合AIの結論
+    doc.add_heading("第3章 MAGI統合AIの結論・アクションプラン", level=2)
+    agg_summary = clean_text_for_display(aggregated.get("summary", ""))
+    agg_details = clean_text_for_display(aggregated.get("details", ""))
+    if agg_summary:
+        doc.add_paragraph("【サマリー】")
+        doc.add_paragraph(agg_summary)
+    if agg_details:
+        doc.add_paragraph("【詳細】")
+        for line in agg_details.splitlines():
+            doc.add_paragraph(line)
+
+    # 第4章 SWOT分析（ON のときだけ）
+    if enable_swot and swot:
+        if any(swot.values()):
+            doc.add_heading("第4章 SWOT分析", level=2)
+            doc.add_paragraph(f"Strengths（強み）：{swot.get('strengths', '')}")
+            doc.add_paragraph(f"Weaknesses（弱み）：{swot.get('weaknesses', '')}")
+            doc.add_paragraph(f"Opportunities（機会）：{swot.get('opportunities', '')}")
+            doc.add_paragraph(f"Threats（脅威）：{swot.get('threats', '')}")
+        else:
+            doc.add_heading("第4章 SWOT分析", level=2)
+            doc.add_paragraph("今回の実行では、SWOT分析は生成されませんでした。")
+
+    # 付録：生テキスト
+    doc.add_heading("付録：MAGI生テキスト", level=2)
+    for line in magi_raw_text.splitlines():
+        doc.add_paragraph(line)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ======================================================
+# サイドバー：媒体入力
+# ======================================================
+st.sidebar.markdown("### 媒体入力（任意）")
+
+input_mode = st.sidebar.radio(
+    "画像・音声の入力方法",
+    ["ファイル／写真ライブラリから選択", "カメラで撮影", "使用しない"],
+    index=2,
+)
+
+uploaded_file: Optional[Any] = None
+image_for_report: Optional[Image.Image] = None
+
+if input_mode == "ファイル／写真ライブラリから選択":
+    file = st.sidebar.file_uploader(
+        "画像 / 音声 / テキストファイル",
+        accept_multiple_files=False,
+    )
+    if file:
+        uploaded_file = file
+elif input_mode == "カメラで撮影":
+    cam = st.sidebar.camera_input("カメラで撮影（対応端末のみ）")
+    if cam:
+        uploaded_file = cam
 else:
-    st.info("避難所データがありません。")
+    st.sidebar.info("媒体入力を使用しない場合は、このままで構いません。")
+
+
+# ======================================================
+# メイン：質問と補足テキスト＋SWOTオプション
+# ======================================================
+st.markdown(
+    '<div class="magi-section-title">INPUT · QUERY</div><hr class="magi-divider">',
+    unsafe_allow_html=True,
+)
+
+user_question = st.text_area(
+    "MAGI に投げたい「問い」",
+    placeholder=(
+        "例：この企画の方向性と改善点をMAGIに評価してほしい。\n"
+        "例：この写真や音声から受ける印象と、次に取るべき行動を知りたい。"
+    ),
+    height=120,
+)
+
+text_input = st.text_area(
+    "補足テキスト（任意）",
+    height=100,
+    placeholder="貼り付けたいメモや補足情報があれば入力してください。",
+)
+
+enable_swot = st.checkbox(
+    "SWOT分析を有効にする（Strengths / Weaknesses / Opportunities / Threats を複数列挙）",
+    value=False,
+)
+
+if not user_question and not uploaded_file and not text_input:
+    st.info("質問か、媒体（画像・音声など）、または補足テキストのいずれかを入力してください。")
+    st.stop()
+
+# ======================================================
+# 媒体の前処理（テキスト化）
+# ======================================================
+context: Dict[str, Any] = {
+    "user_question": user_question,
+    "text_input": text_input,
+    "audio_transcript": "",
+    "image_description": "",
+}
+
+if uploaded_file is not None:
+    if uploaded_file.type and uploaded_file.type.startswith("image/"):
+        try:
+            image = Image.open(uploaded_file).convert("RGB")
+        except Exception:
+            st.error("この画像形式には対応していません。JPEG または PNG 形式の画像を使用してください。")
+            image = None
+
+        if image is not None:
+            image_for_report = image
+            st.image(image, caption="入力画像", use_column_width=True)
+
+            with st.spinner("画像内容を解析中（Gemini）..."):
+                img_desc = describe_image_with_gemini(image)
+            context["image_description"] = img_desc
+
+    elif uploaded_file.type and uploaded_file.type.startswith("audio/"):
+        st.audio(uploaded_file)
+        with st.spinner("音声を文字起こし中（Gemini）..."):
+            transcript = transcribe_audio_with_gemini(uploaded_file)
+        context["audio_transcript"] = transcript
+
+    else:
+        if (uploaded_file.type == "text/plain") or (
+            isinstance(uploaded_file.name, str)
+            and uploaded_file.name.lower().endswith(".txt")
+        ):
+            text_bytes = uploaded_file.read()
+            context["text_input"] += "\n\n[ファイル内容]\n" + text_bytes.decode(
+                "utf-8", errors="ignore"
+            )
+        else:
+            st.warning("対応していないファイル形式です。画像・音声・テキストファイルを使用してください。")
+
+# ======================================================
+# MAGI 分析実行（コメントを問の近くに表示）
+# ======================================================
+run_analysis = st.button("🔎 MAGI による分析を実行", type="primary")
+
+if run_analysis:
+    if not user_question and not text_input and not any(
+        [context["audio_transcript"], context["image_description"]]
+    ):
+        st.warning("最低でも質問・テキスト・媒体のいずれかが必要です。")
+        st.stop()
+
+    with st.spinner("MAGI 分析を実行中..."):
+        magi_text = call_magi_plain(context, enable_swot=enable_swot)
+
+    if magi_text is None:
+        # 本当にテキストが返らなかった場合だけ、共通の案内を出す
+        st.error(
+            "【エラー】Gemini が有効なテキストを返しませんでした。\n"
+            "・内容が極端に長い\n・安全フィルタにかかる表現が含まれている\nなどの可能性があります。\n\n"
+            "一度、質問やテキストを短く・穏やかな表現にして再実行してみてください。"
+        )
+        st.stop()
+
+    if isinstance(magi_text, str) and magi_text.startswith("【エラー】"):
+        # ResourceExhausted / Safety / MAX_TOKENS など、詳細メッセージをそのまま表示
+        st.error(magi_text)
+        st.stop()
+
+    agents, aggregated, swot = parse_magi_text(magi_text)
+
+    st.success("MAGI の分析が完了しました。")
+
+    # ▼ 質問のすぐ下にコメント欄を配置
+    st.markdown(
+        '<div class="magi-section-title">OUTPUT · MAGI COMMENTS</div><hr class="magi-divider">',
+        unsafe_allow_html=True,
+    )
+
+    colL, colR = st.columns(2)
+
+    # 左側：Logic / Reality
+    with colL:
+        if "logic" in agents:
+            a = agents["logic"]
+            dec = decision_to_css(a.get("decision_code", "Hold"))
+            st.markdown("##### Magi-Logic")
+            st.markdown(
+                f'''
+                <div class="magi-panel magi-panel-logic">
+                  <div class="magi-vote magi-vote-{dec["css"]}">
+                    <div class="magi-vote-label-en">{dec["en"]}</div>
+                    <div class="magi-vote-label-jp">{dec["jp"]}</div>
+                  </div>
+                  <div class="magi-panel-summary">
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
+                  </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
+
+        if "reality" in agents:
+            a = agents["reality"]
+            dec = decision_to_css(a.get("decision_code", "Hold"))
+            st.markdown("##### Magi-Reality")
+            st.markdown(
+                f'''
+                <div class="magi-panel magi-panel-reality">
+                  <div class="magi-vote magi-vote-{dec["css"]}">
+                    <div class="magi-vote-label-en">{dec["en"]}</div>
+                    <div class="magi-vote-label-jp">{dec["jp"]}</div>
+                  </div>
+                  <div class="magi-panel-summary">
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
+                  </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
+
+    # 右側：Human / Media
+    with colR:
+        if "human" in agents:
+            a = agents["human"]
+            dec = decision_to_css(a.get("decision_code", "Hold"))
+            st.markdown("##### Magi-Human")
+            st.markdown(
+                f'''
+                <div class="magi-panel magi-panel-human">
+                  <div class="magi-vote magi-vote-{dec["css"]}">
+                    <div class="magi-vote-label-en">{dec["en"]}</div>
+                    <div class="magi-vote-label-jp">{dec["jp"]}</div>
+                  </div>
+                  <div class="magi-panel-summary">
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
+                  </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
+
+        if "media" in agents:
+            a = agents["media"]
+            dec = decision_to_css(a.get("decision_code", "Hold"))
+            st.markdown("##### Magi-Media")
+            st.markdown(
+                f'''
+                <div class="magi-panel magi-panel-media">
+                  <div class="magi-vote magi-vote-{dec["css"]}">
+                    <div class="magi-vote-label-en">{dec["en"]}</div>
+                    <div class="magi-vote-label-jp">{dec["jp"]}</div>
+                  </div>
+                  <div class="magi-panel-summary">
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
+                  </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
+
+    # 統合コメント
+    agg_html = clean_text_for_display(
+        aggregated.get("details", "") or aggregated.get("summary", "")
+    )
+    st.markdown(
+        '<div class="magi-section-title">OUTPUT · MAGI AGGREGATED DECISION</div><hr class="magi-divider">',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="magi-aggregator">{agg_html.replace("\\n", "<br>")}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ==================================================
+    # SWOT 表示（SWOT ON のときだけ／生成されていれば）
+    # ==================================================
+    if enable_swot:
+        st.markdown(
+            '<div class="magi-section-title">SWOT · STRATEGIC VIEW</div><hr class="magi-divider">',
+            unsafe_allow_html=True,
+        )
+
+        if any(swot.values()):
+            col_s, col_w = st.columns(2)
+            with col_s:
+                s_html = swot_text_to_chips(swot.get("strengths", ""), "swot-chip-s")
+                st.markdown(
+                    f'''
+                    <div class="magi-panel-swot">
+                      <b>Strengths（強み）</b><br>
+                      {s_html}
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+            with col_w:
+                w_html = swot_text_to_chips(swot.get("weaknesses", ""), "swot-chip-w")
+                st.markdown(
+                    f'''
+                    <div class="magi-panel-swot">
+                      <b>Weaknesses（弱み）</b><br>
+                      {w_html}
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+
+            col_o, col_t = st.columns(2)
+            with col_o:
+                o_html = swot_text_to_chips(swot.get("opportunities", ""), "swot-chip-o")
+                st.markdown(
+                    f'''
+                    <div class="magi-panel-swot">
+                      <b>Opportunities（機会）</b><br>
+                      {o_html}
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+            with col_t:
+                t_html = swot_text_to_chips(swot.get("threats", ""), "swot-chip-t")
+                st.markdown(
+                    f'''
+                    <div class="magi-panel-swot">
+                      <b>Threats（脅威）</b><br>
+                      {t_html}
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("今回の実行では、SWOT分析は生成されませんでした。入力内容をもう少し具体的にして再実行してみてください。")
+
+    # レポート出力
+    report_bytes = build_word_report(
+        context=context,
+        agents=agents,
+        aggregated=aggregated,
+        magi_raw_text=magi_text,
+        image=image_for_report,
+        swot=swot,
+        enable_swot=enable_swot,
+    )
+
+    st.markdown(
+        '<div class="magi-section-title">REPORT · EXPORT</div><hr class="magi-divider">',
+        unsafe_allow_html=True,
+    )
+
+    file_name = "MAGI分析レポート_テキスト簡易版"
+    if enable_swot:
+        file_name += "+SWOT"
+    file_name += ".docx"
+
+    st.download_button(
+        "MAGIレポート（Word）をダウンロード",
+        data=report_bytes,
+        file_name=file_name,
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+else:
+    st.info(
+        "質問と必要なら補足テキストを入力し、右側のサイドバーで画像・音声・ファイルを指定してから、\n"
+        "「MAGI による分析を実行」を押してください。"
+    )
